@@ -1,0 +1,1 @@
+ "$env:PATH;C:\Users\306051\nodejs\node-v24.12.0-win-x64"

@@ -1,0 +1,1 @@
+TESSERACT_CMD = r"c:\Users\306051\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"

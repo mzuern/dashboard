@@ -1,21 +1,38 @@
+from typing import List, Optional
 from pydantic import BaseModel
-from typing import Optional, List
 
-class ProjectOut(BaseModel):
+
+# --------------------
+# Base mixin
+# --------------------
+class ORMBase(BaseModel):
+    model_config = {
+        "from_attributes": True
+    }
+
+
+# --------------------
+# Projects
+# --------------------
+class ProjectOut(ORMBase):
     id: int
     name: str
-    class Config:
-        from_attributes = True
 
-class DeviceOut(BaseModel):
+
+# --------------------
+# Devices
+# --------------------
+class DeviceOut(ORMBase):
     id: int
     project_id: int
     tag: str
     description: Optional[str] = None
-    class Config:
-        from_attributes = True
 
-class HotspotOut(BaseModel):
+
+# --------------------
+# Drawings / Hotspots
+# --------------------
+class HotspotOut(ORMBase):
     id: int
     drawing_id: int
     device_id: int
@@ -24,43 +41,53 @@ class HotspotOut(BaseModel):
     w: int
     h: int
     label: Optional[str] = None
-    class Config:
-        from_attributes = True
 
-class DrawingOut(BaseModel):
+
+class DrawingOut(ORMBase):
     id: int
     project_id: int
     title: str
     image_url: str
-    hotspots: List[HotspotOut]
-    class Config:
-        from_attributes = True
+    hotspots: List[HotspotOut] = []
 
+
+# --------------------
+# Issues
+# --------------------
 class IssueCreate(BaseModel):
     project_id: int
-    device_id: int
+    device_id: Optional[int] = None
     drawing_id: Optional[int] = None
     severity: str = "medium"
     notes: Optional[str] = None
 
-class IssueOut(BaseModel):
+
+class IssueFromOCR(BaseModel):
+    project_id: int
+    text: str
+    device_id: Optional[int] = None
+    drawing_id: Optional[int] = None
+    severity: str = "medium"
+
+
+class IssueOut(ORMBase):
     id: int
     project_id: int
-    device_id: int
+    device_id: Optional[int] = None
     drawing_id: Optional[int] = None
     severity: str
     status: str
     notes: Optional[str] = None
-    class Config:
-        from_attributes = True
 
-class TestLine(BaseModel):
+
+# --------------------
+# Test Sheets
+# --------------------
+class TestLine(ORMBase):
     device_id: int
     tag: str
     description: Optional[str] = None
     has_open_issue: bool
-    class Config:
-        from_attributes = True
 
 class TestSheetOut(BaseModel):
     project_id: int
