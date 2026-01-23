@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import axios from "axios";
+import { DashboardOverview } from "./components/DashboardOverview";
 
 const API = "http://127.0.0.1:8000";
 
@@ -9,7 +10,10 @@ type Hotspot = {
   id: number;
   drawing_id: number;
   device_id: number;
-  x: number; y: number; w: number; h: number;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
   label?: string | null;
 };
 
@@ -47,40 +51,80 @@ export default function App() {
 
   const [issues, setIssues] = useState<Issue[]>([]);
   const [testLines, setTestLines] = useState<TestLine[]>([]);
-  const [busy, setBusy] = useState(false);
 
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // -------- load projects on start --------
   useEffect(() => {
-    axios.get<Project[]>(`${API}/projects`).then(r => {
-      setProjects(r.data);
-      if (r.data.length) setProjectId(r.data[0].id);
-    });
+    let mounted = true;
+    setError(null);
+
+    axios
+      .get<Project[]>(`${API}/projects`)
+      .then((r) => {
+        if (!mounted) return;
+        setProjects(r.data);
+        if (r.data.length) setProjectId(r.data[0].id);
+      })
+      .catch((e) => {
+        if (!mounted) return;
+        setError(readAxiosError(e));
+      });
+
+    return () => {
+      mounted = false;
+    };
   }, []);
 
+  // -------- load drawings + issues + testsheet when project changes --------
   useEffect(() => {
     if (!projectId) return;
 
-    axios.get<Drawing[]>(`${API}/projects/${projectId}/drawings`).then(r => {
-      setDrawings(r.data);
-      setActiveDrawing(r.data[0] ?? null);
-    });
+    let mounted = true;
+    setError(null);
 
-    refreshIssuesAndSheet(projectId);
+    (async () => {
+      try {
+        const d = await axios.get<Drawing[]>(`${API}/projects/${projectId}/drawings`);
+        if (!mounted) return;
+
+        setDrawings(d.data);
+        setActiveDrawing(d.data[0] ?? null);
+
+        await refreshIssuesAndSheet(projectId, mounted);
+      } catch (e) {
+        if (!mounted) return;
+        setError(readAxiosError(e));
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
   }, [projectId]);
 
-  async function refreshIssuesAndSheet(pid: number) {
+  async function refreshIssuesAndSheet(pid: number, mounted: boolean = true) {
     const [iss, sheet] = await Promise.all([
       axios.get<Issue[]>(`${API}/projects/${pid}/issues`),
       axios.get<{ project_id: number; lines: TestLine[] }>(`${API}/projects/${pid}/testsheets`),
     ]);
+
+    if (!mounted) return;
+
     setIssues(iss.data);
     setTestLines(sheet.data.lines);
   }
 
-  const issueDeviceIds = useMemo(() => new Set(issues.filter(i => i.status === "open").map(i => i.device_id)), [issues]);
+  const issueDeviceIds = useMemo(() => {
+    return new Set(issues.filter((i) => i.status === "open").map((i) => i.device_id));
+  }, [issues]);
 
   async function onHotspotClick(h: Hotspot) {
     if (!projectId || !activeDrawing) return;
+
     setBusy(true);
+    setError(null);
     try {
       await axios.post(`${API}/issues`, {
         project_id: projectId,
@@ -89,7 +133,10 @@ export default function App() {
         severity: "medium",
         notes: `Flagged from drawing hotspot ${h.label ?? ""}`.trim(),
       });
+
       await refreshIssuesAndSheet(projectId);
+    } catch (e) {
+      setError(readAxiosError(e));
     } finally {
       setBusy(false);
     }
@@ -97,10 +144,26 @@ export default function App() {
 
   return (
     <div style={{ fontFamily: "system-ui", padding: 16, maxWidth: 1400, margin: "0 auto" }}>
-      <h1 style={{ margin: 0 }}>dashboard demo</h1>
+      <h1 style={{ margin: 0 }}>Dashboard Demo</h1>
       <p style={{ marginTop: 6, opacity: 0.75 }}>
         Click a hotspot → creates Issue → test sheet highlights device
       </p>
+
+      {error ? (
+        <div
+          style={{
+            background: "#fee2e2",
+            border: "1px solid #fecaca",
+            color: "#7f1d1d",
+            padding: 12,
+            borderRadius: 10,
+            marginBottom: 12,
+            whiteSpace: "pre-wrap",
+          }}
+        >
+          <b>Error:</b> {error}
+        </div>
+      ) : null}
 
       <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 12 }}>
         <label>
@@ -108,8 +171,13 @@ export default function App() {
           <select
             value={projectId ?? ""}
             onChange={(e) => setProjectId(Number(e.target.value))}
+            disabled={projects.length === 0}
           >
-            {projects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name}
+              </option>
+            ))}
           </select>
         </label>
 
@@ -119,22 +187,33 @@ export default function App() {
             value={activeDrawing?.id ?? ""}
             onChange={(e) => {
               const id = Number(e.target.value);
-              setActiveDrawing(drawings.find(d => d.id === id) ?? null);
+              setActiveDrawing(drawings.find((d) => d.id === id) ?? null);
             }}
+            disabled={drawings.length === 0}
           >
-            {drawings.map(d => <option key={d.id} value={d.id}>{d.title}</option>)}
+            {drawings.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.title}
+              </option>
+            ))}
           </select>
         </label>
 
-        {busy && <span style={{ opacity: 0.75 }}>Working…</span>}
+        {busy ? <span style={{ opacity: 0.75 }}>Working…</span> : null}
       </div>
 
+      {/* Top Overview */}
+      <div style={{ marginBottom: 16 }}>
+        <DashboardOverview />
+      </div>
+
+      {/* Main Grid */}
       <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
         {/* Drawing Viewer */}
         <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
           <h2 style={{ marginTop: 0 }}>Drawing Map</h2>
           {!activeDrawing ? (
-            <div>No drawing</div>
+            <div style={{ opacity: 0.7 }}>No drawing loaded</div>
           ) : (
             <DrawingViewer
               drawing={activeDrawing}
@@ -148,11 +227,12 @@ export default function App() {
         <div style={{ display: "grid", gap: 16 }}>
           <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
             <h2 style={{ marginTop: 0 }}>Open Issues</h2>
+
             {issues.length === 0 ? (
               <div style={{ opacity: 0.7 }}>None</div>
             ) : (
               <ul style={{ margin: 0, paddingLeft: 18 }}>
-                {issues.map(i => (
+                {issues.map((i) => (
                   <li key={i.id}>
                     <b>Device #{i.device_id}</b> — {i.severity} — {i.status}
                     {i.notes ? <div style={{ opacity: 0.8 }}>{i.notes}</div> : null}
@@ -167,29 +247,38 @@ export default function App() {
             <div style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>
               Highlighted rows mean “has open issue”
             </div>
+
             <table style={{ width: "100%", borderCollapse: "collapse" }}>
               <thead>
                 <tr>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #eee", paddingBottom: 6 }}>Tag</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", paddingBottom: 6 }}>Description</th>
+                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", paddingBottom: 6 }}>
+                    Description
+                  </th>
                   <th style={{ textAlign: "left", borderBottom: "1px solid #eee", paddingBottom: 6 }}>Status</th>
                 </tr>
               </thead>
               <tbody>
-                {testLines.map(line => (
-                  <tr key={line.device_id} style={{ background: line.has_open_issue ? "#fff3cd" : "transparent" }}>
-                    <td style={{ padding: "6px 0" }}><b>{line.tag}</b></td>
-                    <td style={{ padding: "6px 0", opacity: 0.8 }}>{line.description ?? ""}</td>
+                {testLines.map((line) => (
+                  <tr
+                    key={line.device_id}
+                    style={{ background: line.has_open_issue ? "#fff3cd" : "transparent" }}
+                  >
                     <td style={{ padding: "6px 0" }}>
-                      {line.has_open_issue ? "Attention" : "OK"}
+                      <b>{line.tag}</b>
                     </td>
+                    <td style={{ padding: "6px 0", opacity: 0.8 }}>{line.description ?? ""}</td>
+                    <td style={{ padding: "6px 0" }}>{line.has_open_issue ? "Attention" : "OK"}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-
         </div>
+      </div>
+
+      <div style={{ marginTop: 12, fontSize: 12, opacity: 0.6 }}>
+        API: {API} — Endpoints: /projects, /projects/:id/drawings, /issues, /projects/:id/issues, /projects/:id/testsheets
       </div>
     </div>
   );
@@ -198,7 +287,7 @@ export default function App() {
 function DrawingViewer({
   drawing,
   issueDeviceIds,
-  onHotspotClick
+  onHotspotClick,
 }: {
   drawing: Drawing;
   issueDeviceIds: Set<number>;
@@ -211,7 +300,8 @@ function DrawingViewer({
         alt={drawing.title}
         style={{ width: "100%", borderRadius: 8, display: "block" }}
       />
-      {drawing.hotspots.map(h => {
+
+      {drawing.hotspots.map((h) => {
         const left = `${h.x / 100}%`;
         const top = `${h.y / 100}%`;
         const width = `${h.w / 100}%`;
@@ -237,16 +327,18 @@ function DrawingViewer({
               padding: 0,
             }}
           >
-            <span style={{
-              position: "absolute",
-              left: 6,
-              top: 6,
-              fontSize: 12,
-              background: "rgba(0,0,0,0.7)",
-              color: "white",
-              padding: "2px 6px",
-              borderRadius: 999,
-            }}>
+            <span
+              style={{
+                position: "absolute",
+                left: 6,
+                top: 6,
+                fontSize: 12,
+                background: "rgba(0,0,0,0.7)",
+                color: "white",
+                padding: "2px 6px",
+                borderRadius: 999,
+              }}
+            >
               {h.label ?? `#${h.device_id}`}
             </span>
           </button>
@@ -256,3 +348,17 @@ function DrawingViewer({
   );
 }
 
+function readAxiosError(e: any): string {
+  // Axios error shape
+  const msg =
+    e?.response?.data?.detail ??
+    e?.response?.data?.message ??
+    e?.message ??
+    "Unknown error";
+  if (typeof msg === "string") return msg;
+  try {
+    return JSON.stringify(msg);
+  } catch {
+    return String(msg);
+  }
+}

@@ -1,4 +1,5 @@
 from __future__ import annotations
+from qc_extract import parse_qc_pdf
 
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
@@ -8,6 +9,7 @@ from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import func
 
 from db import Base, SessionLocal, engine
 from models import Device, Drawing, Issue, Project
@@ -143,6 +145,93 @@ def create_issue(payload: IssueCreate, db: Session = Depends(get_db)):
     db.refresh(issue)
     return issue
 
+# =========================
+# Devices (BOM-ish) + Device Issues (for Device Panel)
+# =========================
+
+@app.get("/projects/{project_id}/devices")
+def list_devices(project_id: int, db: Session = Depends(get_db)):
+    """
+    Returns devices for a project + open issue counts.
+    UI uses this for BOM list + badges.
+    """
+    devices = (
+        db.query(Device)
+        .filter(Device.project_id == project_id)
+        .order_by(Device.tag.asc())
+        .all()
+    )
+
+    # open issue counts per device
+    counts = dict(
+        db.query(Issue.device_id, func.count(Issue.id))
+        .filter(
+            Issue.project_id == project_id,
+            Issue.status == "open",
+            Issue.device_id.isnot(None),
+        )
+        .group_by(Issue.device_id)
+        .all()
+    )
+
+    return [
+        {
+            "id": d.id,
+            "project_id": d.project_id,
+            "tag": d.tag,
+            "description": d.description,
+            "open_issues": int(counts.get(d.id, 0)),
+        }
+        for d in devices
+    ]
+
+
+@app.get("/devices/{device_id}")
+def get_device(device_id: int, db: Session = Depends(get_db)):
+    d = db.query(Device).filter(Device.id == device_id).first()
+    if not d:
+        raise HTTPException(status_code=404, detail="Device not found")
+    return {
+        "id": d.id,
+        "project_id": d.project_id,
+        "tag": d.tag,
+        "description": d.description,
+    }
+
+
+@app.get("/devices/{device_id}/issues", response_model=List[IssueOut])
+def get_device_issues(device_id: int, db: Session = Depends(get_db)):
+    """
+    Returns issues for dropdown in Device Panel.
+    """
+    return (
+        db.query(Issue)
+        .filter(Issue.device_id == device_id)
+        .order_by(Issue.id.desc())
+        .all()
+    )
+
+
+@app.patch("/issues/{issue_id}", response_model=IssueOut)
+def patch_issue(issue_id: int, payload: Dict[str, Optional[str]], db: Session = Depends(get_db)):
+    """
+    Minimal patch endpoint so UI can close/reopen issues.
+    Accepts keys: status, severity, notes
+    """
+    issue = db.query(Issue).filter(Issue.id == issue_id).first()
+    if not issue:
+        raise HTTPException(status_code=404, detail="Issue not found")
+
+    if "status" in payload and payload["status"]:
+        issue.status = payload["status"]
+    if "severity" in payload and payload["severity"]:
+        issue.severity = payload["severity"]
+    if "notes" in payload:
+        issue.notes = payload["notes"]
+
+    db.commit()
+    db.refresh(issue)
+    return issue
 
 # =========================
 # Testsheet (Device list + open issue markers)
@@ -275,3 +364,13 @@ async def ocr_image(file: UploadFile = File(...)):
 
     return JSONResponse({"lines": lines})
 
+@app.post("/qc/parse_pdf")
+async def qc_parse_pdf(file: UploadFile = File(...)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty upload")
+    try:
+        result = parse_qc_pdf(data)
+        return JSONResponse(result)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
