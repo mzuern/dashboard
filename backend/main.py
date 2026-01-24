@@ -1,6 +1,6 @@
 from __future__ import annotations
 from qc_extract import parse_qc_pdf
-
+from qc_parser import parse_qc_pdf
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional
 
@@ -374,3 +374,10 @@ async def qc_parse_pdf(file: UploadFile = File(...)):
         return JSONResponse(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    
+@app.post("/qc/parse")
+async def qc_parse(file: UploadFile = File(...)):
+    data = await file.read()
+    if not data:
+        return {"error": "Empty file"}
+    return parse_qc_pdf(data)
