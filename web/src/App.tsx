@@ -4,72 +4,59 @@ import { DashboardOverview } from "./components/DashboardOverview";
 
 const API = "http://127.0.0.1:8000";
 
-type Project = { id: number; name: string };
-
-type Hotspot = {
-  id: number;
-  drawing_id: number;
-  device_id: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-  label?: string | null;
-};
-
-type Drawing = {
-  id: number;
+type ProjectSummary = {
   project_id: number;
-  title: string;
-  image_url: string;
-  hotspots: Hotspot[];
+  project_number: string;       // e.g. "4009"
+  customer_name: string;        // e.g. "Acme Power"
+  project_manager: string;      // e.g. "Dan"
+  mfg_issue_count: number;      // total issues tagged manufacturing
+  eng_issue_count: number;      // total issues tagged engineering
+  open_issue_count: number;     // total open
+  closed_issue_count: number;   // total closed
+  oldest_open_days: number | null; // null if no open issues
 };
 
-type Issue = {
-  id: number;
-  project_id: number;
-  device_id: number;
-  drawing_id?: number | null;
-  severity: string;
-  status: string;
-  notes?: string | null;
-};
+type SortKey =
+  | "project_number"
+  | "customer_name"
+  | "project_manager"
+  | "mfg_issue_count"
+  | "eng_issue_count"
+  | "open_issue_count"
+  | "closed_issue_count"
+  | "oldest_open_days";
 
-type TestLine = {
-  device_id: number;
-  tag: string;
-  description?: string | null;
-  has_open_issue: boolean;
-};
+type SortDir = "asc" | "desc";
 
 export default function App() {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [projectId, setProjectId] = useState<number | null>(null);
-
-  const [drawings, setDrawings] = useState<Drawing[]>([]);
-  const [activeDrawing, setActiveDrawing] = useState<Drawing | null>(null);
-
-  const [issues, setIssues] = useState<Issue[]>([]);
-  const [testLines, setTestLines] = useState<TestLine[]>([]);
+  const [rows, setRows] = useState<ProjectSummary[]>([]);
+  const [selectedProject, setSelectedProject] = useState<string>("ALL");
 
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // -------- load projects on start --------
+  const [sortKey, setSortKey] = useState<SortKey>("project_number");
+  const [sortDir, setSortDir] = useState<SortDir>("asc");
+
+  // -------- load dashboard rows on start --------
   useEffect(() => {
     let mounted = true;
     setError(null);
+    setBusy(true);
 
     axios
-      .get<Project[]>(`${API}/projects`)
+      .get<ProjectSummary[]>(`${API}/dashboard/projects`)
       .then((r) => {
         if (!mounted) return;
-        setProjects(r.data);
-        if (r.data.length) setProjectId(r.data[0].id);
+        setRows(r.data ?? []);
       })
       .catch((e) => {
         if (!mounted) return;
         setError(readAxiosError(e));
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setBusy(false);
       });
 
     return () => {
@@ -77,76 +64,60 @@ export default function App() {
     };
   }, []);
 
-  // -------- load drawings + issues + testsheet when project changes --------
-  useEffect(() => {
-    if (!projectId) return;
+  const projectOptions = useMemo(() => {
+    const unique = new Map<string, { label: string; value: string }>();
+    for (const r of rows) {
+      unique.set(r.project_number, { label: `${r.project_number} — ${r.customer_name}`, value: r.project_number });
+    }
+    return [{ label: "ALL Projects", value: "ALL" }, ...Array.from(unique.values())];
+  }, [rows]);
 
-    let mounted = true;
-    setError(null);
+  const filteredRows = useMemo(() => {
+    if (selectedProject === "ALL") return rows;
+    return rows.filter((r) => r.project_number === selectedProject);
+  }, [rows, selectedProject]);
 
-    (async () => {
-      try {
-        const d = await axios.get<Drawing[]>(`${API}/projects/${projectId}/drawings`);
-        if (!mounted) return;
+  const sortedRows = useMemo(() => {
+    const copy = [...filteredRows];
 
-        setDrawings(d.data);
-        setActiveDrawing(d.data[0] ?? null);
+    copy.sort((a, b) => {
+      const av = a[sortKey];
+      const bv = b[sortKey];
 
-        await refreshIssuesAndSheet(projectId, mounted);
-      } catch (e) {
-        if (!mounted) return;
-        setError(readAxiosError(e));
+      // null handling (oldest_open_days can be null)
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+
+      // number vs string
+      if (typeof av === "number" && typeof bv === "number") {
+        return sortDir === "asc" ? av - bv : bv - av;
       }
-    })();
 
-    return () => {
-      mounted = false;
-    };
-  }, [projectId]);
+      const as = String(av).toLowerCase();
+      const bs = String(bv).toLowerCase();
+      if (as < bs) return sortDir === "asc" ? -1 : 1;
+      if (as > bs) return sortDir === "asc" ? 1 : -1;
+      return 0;
+    });
 
-  async function refreshIssuesAndSheet(pid: number, mounted: boolean = true) {
-    const [iss, sheet] = await Promise.all([
-      axios.get<Issue[]>(`${API}/projects/${pid}/issues`),
-      axios.get<{ project_id: number; lines: TestLine[] }>(`${API}/projects/${pid}/testsheets`),
-    ]);
+    return copy;
+  }, [filteredRows, sortKey, sortDir]);
 
-    if (!mounted) return;
-
-    setIssues(iss.data);
-    setTestLines(sheet.data.lines);
-  }
-
-  const issueDeviceIds = useMemo(() => {
-    return new Set(issues.filter((i) => i.status === "open").map((i) => i.device_id));
-  }, [issues]);
-
-  async function onHotspotClick(h: Hotspot) {
-    if (!projectId || !activeDrawing) return;
-
-    setBusy(true);
-    setError(null);
-    try {
-      await axios.post(`${API}/issues`, {
-        project_id: projectId,
-        device_id: h.device_id,
-        drawing_id: activeDrawing.id,
-        severity: "medium",
-        notes: `Flagged from drawing hotspot ${h.label ?? ""}`.trim(),
-      });
-
-      await refreshIssuesAndSheet(projectId);
-    } catch (e) {
-      setError(readAxiosError(e));
-    } finally {
-      setBusy(false);
+  function toggleSort(key: SortKey) {
+    if (key === sortKey) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(key);
+      setSortDir("asc");
     }
   }
 
   return (
     <div style={{ fontFamily: "system-ui", padding: 16, maxWidth: 1400, margin: "0 auto" }}>
-      <h1 style={{ margin: 0 }}>Dashboard Demo</h1>
+      <h1 style={{ margin: 0 }}>QC Metrics Dashboard</h1>
       <p style={{ marginTop: 6, opacity: 0.75 }}>
-        Click a hotspot → creates Issue → test sheet highlights device
+        Project summary: customer, PM, engineering vs manufacturing, and aging open items
       </p>
 
       {error ? (
@@ -168,188 +139,115 @@ export default function App() {
       <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 12 }}>
         <label>
           Project:&nbsp;
-          <select
-            value={projectId ?? ""}
-            onChange={(e) => setProjectId(Number(e.target.value))}
-            disabled={projects.length === 0}
-          >
-            {projects.map((p) => (
-              <option key={p.id} value={p.id}>
-                {p.name}
+          <select value={selectedProject} onChange={(e) => setSelectedProject(e.target.value)}>
+            {projectOptions.map((p) => (
+              <option key={p.value} value={p.value}>
+                {p.label}
               </option>
             ))}
           </select>
         </label>
 
-        <label>
-          Drawing:&nbsp;
-          <select
-            value={activeDrawing?.id ?? ""}
-            onChange={(e) => {
-              const id = Number(e.target.value);
-              setActiveDrawing(drawings.find((d) => d.id === id) ?? null);
-            }}
-            disabled={drawings.length === 0}
-          >
-            {drawings.map((d) => (
-              <option key={d.id} value={d.id}>
-                {d.title}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        {busy ? <span style={{ opacity: 0.75 }}>Working…</span> : null}
+        {busy ? <span style={{ opacity: 0.75 }}>Loading…</span> : null}
       </div>
 
-      {/* Top Overview */}
+      {/* Optional top cards (keep if you like) */}
       <div style={{ marginBottom: 16 }}>
         <DashboardOverview />
       </div>
 
-      {/* Main Grid */}
-      <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
-        {/* Drawing Viewer */}
-        <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
-          <h2 style={{ marginTop: 0 }}>Drawing Map</h2>
-          {!activeDrawing ? (
-            <div style={{ opacity: 0.7 }}>No drawing loaded</div>
-          ) : (
-            <DrawingViewer
-              drawing={activeDrawing}
-              issueDeviceIds={issueDeviceIds}
-              onHotspotClick={onHotspotClick}
-            />
-          )}
-        </div>
+      <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
+        <h2 style={{ marginTop: 0 }}>Projects</h2>
 
-        {/* Right Column */}
-        <div style={{ display: "grid", gap: 16 }}>
-          <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
-            <h2 style={{ marginTop: 0 }}>Open Issues</h2>
+        {sortedRows.length === 0 ? (
+          <div style={{ opacity: 0.7 }}>{busy ? "Loading…" : "No projects found."}</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <Th label="Project #" onClick={() => toggleSort("project_number")} active={sortKey === "project_number"} dir={sortDir} />
+                <Th label="Customer" onClick={() => toggleSort("customer_name")} active={sortKey === "customer_name"} dir={sortDir} />
+                <Th label="PM" onClick={() => toggleSort("project_manager")} active={sortKey === "project_manager"} dir={sortDir} />
+                <Th label="MFG Issues" onClick={() => toggleSort("mfg_issue_count")} active={sortKey === "mfg_issue_count"} dir={sortDir} />
+                <Th label="ENG Issues" onClick={() => toggleSort("eng_issue_count")} active={sortKey === "eng_issue_count"} dir={sortDir} />
+                <Th label="Open" onClick={() => toggleSort("open_issue_count")} active={sortKey === "open_issue_count"} dir={sortDir} />
+                <Th label="Closed" onClick={() => toggleSort("closed_issue_count")} active={sortKey === "closed_issue_count"} dir={sortDir} />
+                <Th label="Oldest Open (days)" onClick={() => toggleSort("oldest_open_days")} active={sortKey === "oldest_open_days"} dir={sortDir} />
+              </tr>
+            </thead>
 
-            {issues.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>None</div>
-            ) : (
-              <ul style={{ margin: 0, paddingLeft: 18 }}>
-                {issues.map((i) => (
-                  <li key={i.id}>
-                    <b>Device #{i.device_id}</b> — {i.severity} — {i.status}
-                    {i.notes ? <div style={{ opacity: 0.8 }}>{i.notes}</div> : null}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
-
-          <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
-            <h2 style={{ marginTop: 0 }}>Test Sheet (Demo)</h2>
-            <div style={{ fontSize: 13, opacity: 0.7, marginBottom: 8 }}>
-              Highlighted rows mean “has open issue”
-            </div>
-
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", paddingBottom: 6 }}>Tag</th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", paddingBottom: 6 }}>
-                    Description
-                  </th>
-                  <th style={{ textAlign: "left", borderBottom: "1px solid #eee", paddingBottom: 6 }}>Status</th>
-                </tr>
-              </thead>
-              <tbody>
-                {testLines.map((line) => (
-                  <tr
-                    key={line.device_id}
-                    style={{ background: line.has_open_issue ? "#fff3cd" : "transparent" }}
-                  >
-                    <td style={{ padding: "6px 0" }}>
-                      <b>{line.tag}</b>
+            <tbody>
+              {sortedRows.map((r) => {
+                const resolvedLabel = r.open_issue_count === 0 ? "Yes" : "No";
+                return (
+                  <tr key={`${r.project_id}-${r.project_number}`} style={{ borderTop: "1px solid #eee" }}>
+                    <td style={{ padding: "10px 6px", fontWeight: 700 }}>{r.project_number}</td>
+                    <td style={{ padding: "10px 6px" }}>{r.customer_name}</td>
+                    <td style={{ padding: "10px 6px" }}>{r.project_manager}</td>
+                    <td style={{ padding: "10px 6px" }}>{r.mfg_issue_count}</td>
+                    <td style={{ padding: "10px 6px" }}>{r.eng_issue_count}</td>
+                    <td style={{ padding: "10px 6px" }}>{r.open_issue_count}</td>
+                    <td style={{ padding: "10px 6px" }}>{r.closed_issue_count}</td>
+                    <td style={{ padding: "10px 6px" }}>
+                      {r.oldest_open_days == null ? (
+                        <span style={{ opacity: 0.7 }}>—</span>
+                      ) : (
+                        r.oldest_open_days
+                      )}
+                      <span style={{ marginLeft: 10, fontSize: 12, opacity: 0.6 }}>
+                        Resolved: {resolvedLabel}
+                      </span>
                     </td>
-                    <td style={{ padding: "6px 0", opacity: 0.8 }}>{line.description ?? ""}</td>
-                    <td style={{ padding: "6px 0" }}>{line.has_open_issue ? "Attention" : "OK"}</td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+                );
+              })}
+            </tbody>
+          </table>
+        )}
       </div>
 
       <div style={{ marginTop: 12, fontSize: 12, opacity: 0.6 }}>
-        API: {API} — Endpoints: /projects, /projects/:id/drawings, /issues, /projects/:id/issues, /projects/:id/testsheets
+        API: {API} — Needs endpoint: <code>/dashboard/projects</code>
       </div>
     </div>
   );
 }
 
-function DrawingViewer({
-  drawing,
-  issueDeviceIds,
-  onHotspotClick,
+function Th({
+  label,
+  onClick,
+  active,
+  dir,
 }: {
-  drawing: Drawing;
-  issueDeviceIds: Set<number>;
-  onHotspotClick: (h: Hotspot) => void;
+  label: string;
+  onClick: () => void;
+  active: boolean;
+  dir: "asc" | "desc";
 }) {
   return (
-    <div style={{ position: "relative" }}>
-      <img
-        src={drawing.image_url}
-        alt={drawing.title}
-        style={{ width: "100%", borderRadius: 8, display: "block" }}
-      />
-
-      {drawing.hotspots.map((h) => {
-        const left = `${h.x / 100}%`;
-        const top = `${h.y / 100}%`;
-        const width = `${h.w / 100}%`;
-        const height = `${h.h / 100}%`;
-
-        const hasIssue = issueDeviceIds.has(h.device_id);
-
-        return (
-          <button
-            key={h.id}
-            onClick={() => onHotspotClick(h)}
-            title={`Device ${h.label ?? ""} (id ${h.device_id})`}
-            style={{
-              position: "absolute",
-              left,
-              top,
-              width,
-              height,
-              border: hasIssue ? "2px solid #d9480f" : "2px solid #2563eb",
-              background: hasIssue ? "rgba(217,72,15,0.15)" : "rgba(37,99,235,0.15)",
-              borderRadius: 8,
-              cursor: "pointer",
-              padding: 0,
-            }}
-          >
-            <span
-              style={{
-                position: "absolute",
-                left: 6,
-                top: 6,
-                fontSize: 12,
-                background: "rgba(0,0,0,0.7)",
-                color: "white",
-                padding: "2px 6px",
-                borderRadius: 999,
-              }}
-            >
-              {h.label ?? `#${h.device_id}`}
-            </span>
-          </button>
-        );
-      })}
-    </div>
+    <th
+      onClick={onClick}
+      style={{
+        textAlign: "left",
+        padding: "8px 6px",
+        borderBottom: "1px solid #eee",
+        cursor: "pointer",
+        userSelect: "none",
+        whiteSpace: "nowrap",
+      }}
+      title="Click to sort"
+    >
+      {label}{" "}
+      {active ? (
+        <span style={{ fontSize: 12, opacity: 0.7 }}>{dir === "asc" ? "▲" : "▼"}</span>
+      ) : (
+        <span style={{ fontSize: 12, opacity: 0.25 }}>↕</span>
+      )}
+    </th>
   );
 }
 
 function readAxiosError(e: any): string {
-  // Axios error shape
   const msg =
     e?.response?.data?.detail ??
     e?.response?.data?.message ??
