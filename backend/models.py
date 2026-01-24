@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, ForeignKey, Float, Text, DateTime
 from sqlalchemy.orm import relationship
+from datetime import datetime, timezone
 from db import Base
 
 class Project(Base):
@@ -66,3 +67,36 @@ class Issue(Base):
 
     project = relationship("Project", back_populates="issues")
     device = relationship("Device", back_populates="issues")
+
+class QCPdfSummary(Base):
+    __tablename__ = "qc_pdf_summaries"
+
+
+    id = Column(Integer, primary_key=True, index=True)
+
+
+    # filename as stored in backend/data/incoming_pdfs
+    source_pdf = Column(String, unique=True, index=True, nullable=False)
+
+
+    # parsed metadata
+    project_number = Column(String, index=True, nullable=True)
+    customer_name = Column(String, nullable=True)
+    project_manager = Column(String, nullable=True)
+
+
+    # metrics
+    mfg_issue_count = Column(Integer, default=0, nullable=False)
+    eng_issue_count = Column(Integer, default=0, nullable=False)
+    open_issue_count = Column(Integer, default=0, nullable=False)
+    closed_issue_count = Column(Integer, default=0, nullable=False)
+    oldest_open_days = Column(Float, nullable=True)
+
+
+    # ingest status
+    parse_status = Column(String, default="ok", nullable=False)  # ok | error
+    parse_error = Column(Text, nullable=True)
+
+
+    ingested_at = Column(DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False)
+

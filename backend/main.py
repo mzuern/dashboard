@@ -32,7 +32,7 @@ from schemas import (
 
 # IMPORTANT: pick ONE parser import
 # If your real parser lives in qc_parser.py, keep this:
-from qc_parser import parse_qc_pdf
+from qc_extract import parse_qc_pdf
 
 
 
@@ -99,6 +99,61 @@ def health():
     return {"ok": True}
 
 
+INCOMING_PDF_DIR = Path(__file__).resolve().parent / "data" / "incoming_pdfs"
+
+
+@app.get("/dashboard/projects")
+def dashboard_projects():
+    """Return project summary rows derived from PDFs in backend/data/incoming_pdfs.
+
+    Output shape matches the web dashboard.
+    """
+    if not INCOMING_PDF_DIR.exists():
+        return []
+
+    rows = []
+    # stable ordering
+    for pdf_path in sorted(INCOMING_PDF_DIR.glob("*.pdf")):
+        try:
+            data = parse_qc_pdf(pdf_path.read_bytes())
+        except Exception as e:
+            # keep the dashboard alive; surface a minimal row so you can see failures
+            rows.append(
+                {
+                    "project_id": pdf_path.stem,
+                    "project_number": pdf_path.stem,
+                    "customer_name": "(parse error)",
+                    "project_manager": "",
+                    "mfg_issue_count": 0,
+                    "eng_issue_count": 0,
+                    "open_issue_count": 0,
+                    "closed_issue_count": 0,
+                    "oldest_open_days": None,
+                    "source_pdf": pdf_path.name,
+                    "error": str(e),
+                }
+            )
+            continue
+
+        meta = data.get("meta", {}) or {}
+        totals = data.get("writeups_by_dept", {}) or {}
+
+        rows.append(
+            {
+                "project_id": pdf_path.stem,
+                "project_number": str(meta.get("project_number") or pdf_path.stem),
+                "customer_name": str(meta.get("project_name") or ""),
+                "project_manager": str(meta.get("project_manager") or ""),
+                "mfg_issue_count": int(totals.get("mfg", 0)),
+                "eng_issue_count": int(totals.get("eng", 0)),
+                "open_issue_count": int(data.get("open_issue_count") or 0),
+                "closed_issue_count": int(data.get("closed_issue_count") or 0),
+                "oldest_open_days": data.get("oldest_open_days"),
+                "source_pdf": pdf_path.name,
+            }
+        )
+
+    return rows
 
 
 # =========================
