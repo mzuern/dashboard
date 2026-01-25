@@ -25,3 +25,17 @@ def render_pdf_page_to_pil(pdf_path: str | Path, page_index: int = 0, dpi: int =
         return img
     finally:
         doc.close()
+
+def render_pdf_bytes_page_to_pil(pdf_bytes: bytes, page_index: int = 0, dpi: int = 200) -> Image.Image:
+    """Render a PDF page from in-memory bytes (UploadFile)."""
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+    try:
+        page = doc.load_page(page_index)
+        zoom = dpi / 72.0
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        img_bytes = pix.tobytes("png")
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+        return img
+    finally:
+        doc.close()

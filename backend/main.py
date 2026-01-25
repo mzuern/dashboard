@@ -17,9 +17,9 @@ from sqlalchemy import func
 from db import Base, SessionLocal, engine
 from models import Device, Drawing, Issue, Project
 from ocr_config import TESSERACT_CMD
-from ocr.pdf_render import render_pdf_page_to_pil
+from ocr.pdf_render import render_pdf_page_to_pil, render_pdf_bytes_page_to_pil
 from ocr.header_extract import extract_page1_header
-from ocr.ocr_adapter import ocr_header_image_paddle
+from ocr.ocr_adapter import ocr_header_image
 from schemas import (
     DrawingOut,
     IssueCreate,
@@ -32,7 +32,7 @@ from schemas import (
 
 # IMPORTANT: pick ONE parser import
 # If your real parser lives in qc_parser.py, keep this:
-from qc_extract import parse_qc_pdf
+from qc_parser import parse_qc_pdf
 
 
 
@@ -99,61 +99,53 @@ def health():
     return {"ok": True}
 
 
-INCOMING_PDF_DIR = Path(__file__).resolve().parent / "data" / "incoming_pdfs"
-
-
+# =========================
+# Dashboard Summary (UI expects this)
+# =========================
 @app.get("/dashboard/projects")
 def dashboard_projects():
-    """Return project summary rows derived from PDFs in backend/data/incoming_pdfs.
+    """Return a lightweight project summary for the QC Metrics Dashboard UI.
 
-    Output shape matches the web dashboard.
+    This endpoint exists because the React dashboard calls /dashboard/projects.
+    Until you wire real DB-backed QC/issue data, we generate summaries from the
+    sample PDFs in backend/data/incoming_pdfs by extracting the page-1 header.
     """
+
     if not INCOMING_PDF_DIR.exists():
         return []
 
     rows = []
-    # stable ordering
-    for pdf_path in sorted(INCOMING_PDF_DIR.glob("*.pdf")):
+    for idx, pdf_path in enumerate(sorted(INCOMING_PDF_DIR.glob("*.pdf")), start=1):
         try:
-            data = parse_qc_pdf(pdf_path.read_bytes())
-        except Exception as e:
-            # keep the dashboard alive; surface a minimal row so you can see failures
-            rows.append(
-                {
-                    "project_id": pdf_path.stem,
-                    "project_number": pdf_path.stem,
-                    "customer_name": "(parse error)",
-                    "project_manager": "",
-                    "mfg_issue_count": 0,
-                    "eng_issue_count": 0,
-                    "open_issue_count": 0,
-                    "closed_issue_count": 0,
-                    "oldest_open_days": None,
-                    "source_pdf": pdf_path.name,
-                    "error": str(e),
-                }
-            )
-            continue
+            img = render_pdf_page_to_pil(pdf_path, page_index=0, dpi=200)
+            header = extract_page1_header(img, ocr_func=ocr_header_image)
+        except Exception:
+            header = {}
 
-        meta = data.get("meta", {}) or {}
-        totals = data.get("writeups_by_dept", {}) or {}
+        project_number = (
+            header.get("job_number")
+            or header.get("project_number")
+            or pdf_path.stem.split("_")[0]
+            or str(idx)
+        )
 
         rows.append(
             {
-                "project_id": pdf_path.stem,
-                "project_number": str(meta.get("project_number") or pdf_path.stem),
-                "customer_name": str(meta.get("project_name") or ""),
-                "project_manager": str(meta.get("project_manager") or ""),
-                "mfg_issue_count": int(totals.get("mfg", 0)),
-                "eng_issue_count": int(totals.get("eng", 0)),
-                "open_issue_count": int(data.get("open_issue_count") or 0),
-                "closed_issue_count": int(data.get("closed_issue_count") or 0),
-                "oldest_open_days": data.get("oldest_open_days"),
-                "source_pdf": pdf_path.name,
+                "project_id": idx,
+                "project_number": str(project_number),
+                "customer_name": header.get("project_name") or "(from PDF header)",
+                "project_manager": header.get("project_manager") or "(unknown)",
+                "mfg_issue_count": 0,
+                "eng_issue_count": 0,
+                "open_issue_count": 0,
+                "closed_issue_count": 0,
+                "oldest_open_days": None,
             }
         )
 
     return rows
+
+
 
 
 # =========================
@@ -376,10 +368,36 @@ def ingest_page1(file: str = Query(..., description="PDF filename inside backend
 
 
     img = render_pdf_page_to_pil(pdf_path, page_index=0, dpi=200)
-    data = extract_page1_header(img, ocr_func=ocr_header_image_paddle)
+    data = extract_page1_header(img, ocr_func=ocr_header_image)
     data["source_pdf"] = file
     return data
 
+
+
+@app.get("/ingest/files")
+def ingest_list_files():
+    """List sample PDFs already in backend/data/incoming_pdfs."""
+    if not INCOMING_PDF_DIR.exists():
+        return {"files": []}
+    files = sorted([p.name for p in INCOMING_PDF_DIR.glob("*.pdf")])
+    return {"files": files}
+
+
+@app.post("/ingest/page1/upload")
+async def ingest_page1_upload(file: UploadFile = File(...)):
+    """Upload a PDF and extract the page-1 header fields."""
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty upload")
+
+    try:
+        img = render_pdf_bytes_page_to_pil(data, page_index=0, dpi=200)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to render PDF: {e}")
+
+    header = extract_page1_header(img, ocr_func=ocr_header_image)
+    header["source_pdf"] = file.filename
+    return header
 
 
 

@@ -32,6 +32,13 @@ export default function App() {
   const [rows, setRows] = useState<ProjectSummary[]>([]);
   const [selectedProject, setSelectedProject] = useState<string>("ALL");
 
+  // ---- page-1 header extractor (PDF ingest) ----
+  const [pdfFiles, setPdfFiles] = useState<string[]>([]);
+  const [selectedPdf, setSelectedPdf] = useState<string>("");
+  const [headerBusy, setHeaderBusy] = useState(false);
+  const [headerError, setHeaderError] = useState<string | null>(null);
+  const [header, setHeader] = useState<any | null>(null);
+
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -63,6 +70,54 @@ export default function App() {
       mounted = false;
     };
   }, []);
+
+  // -------- load available sample PDFs (optional) --------
+  useEffect(() => {
+    axios
+      .get<{ files: string[] }>(`${API}/ingest/files`)
+      .then((r) => {
+        const files = r.data?.files ?? [];
+        setPdfFiles(files);
+        if (!selectedPdf && files.length) setSelectedPdf(files[0]);
+      })
+      .catch(() => {
+        // silent: ingest is optional
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function runHeaderExtract() {
+    if (!selectedPdf) return;
+    setHeaderError(null);
+    setHeaderBusy(true);
+    setHeader(null);
+    try {
+      const r = await axios.get(`${API}/ingest/page1`, { params: { file: selectedPdf } });
+      setHeader(r.data);
+    } catch (e) {
+      setHeaderError(readAxiosError(e));
+    } finally {
+      setHeaderBusy(false);
+    }
+  }
+
+  async function uploadAndExtract(file: File) {
+    setHeaderError(null);
+    setHeaderBusy(true);
+    setHeader(null);
+    try {
+      const fd = new FormData();
+      fd.append("file", file);
+      const r = await axios.post(`${API}/ingest/page1/upload`, fd, {
+        headers: { "Content-Type": "multipart/form-data" },
+      });
+      setHeader(r.data);
+    } catch (e) {
+      setHeaderError(readAxiosError(e));
+    } finally {
+      setHeaderBusy(false);
+    }
+  }
 
   const projectOptions = useMemo(() => {
     const unique = new Map<string, { label: string; value: string }>();
@@ -151,6 +206,88 @@ export default function App() {
         {busy ? <span style={{ opacity: 0.75 }}>Loading…</span> : null}
       </div>
 
+      {/* =====================
+          PDF Header Extractor (Page 1)
+      ====================== */}
+      <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12, marginBottom: 16 }}>
+        <h2 style={{ marginTop: 0, marginBottom: 8 }}>PDF Header Extractor</h2>
+        <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 10 }}>
+          Pick a sample PDF or upload one, then click Extract. (Uses <code>/ingest/page1</code>)
+        </div>
+
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            Sample PDF:
+            <select
+              value={selectedPdf}
+              onChange={(e) => setSelectedPdf(e.target.value)}
+              disabled={!pdfFiles.length}
+            >
+              {pdfFiles.length ? (
+                pdfFiles.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))
+              ) : (
+                <option value="">(no sample PDFs found)</option>
+              )}
+            </select>
+          </label>
+
+          <button onClick={runHeaderExtract} disabled={!selectedPdf || headerBusy}>
+            {headerBusy ? "Extracting…" : "Extract"}
+          </button>
+
+          <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            Upload:
+            <input
+              type="file"
+              accept="application/pdf"
+              disabled={headerBusy}
+              onChange={(e) => {
+                const f = e.target.files?.[0];
+                if (f) uploadAndExtract(f);
+                e.currentTarget.value = "";
+              }}
+            />
+          </label>
+        </div>
+
+        {headerError ? (
+          <div
+            style={{
+              marginTop: 10,
+              background: "#fee2e2",
+              border: "1px solid #fecaca",
+              color: "#7f1d1d",
+              padding: 10,
+              borderRadius: 10,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            <b>Error:</b> {headerError}
+          </div>
+        ) : null}
+
+        {header ? (
+          <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 10 }}>
+            <Field label="Job #" value={header.job_number || header.project_number || "—"} />
+            <Field label="Project Manager" value={header.project_manager || "—"} />
+            <Field label="Date" value={header.date || "—"} />
+            <Field label="Source" value={header.source_pdf || "—"} />
+            <div style={{ gridColumn: "1 / -1" }}>
+              <details>
+                <summary style={{ cursor: "pointer" }}>Raw OCR text (debug)</summary>
+                <pre style={{ marginTop: 8, padding: 10, background: "#f7f7f7", borderRadius: 8, overflowX: "auto" }}>
+{String(header.raw_text ?? "")}
+                </pre>
+              </details>
+            </div>
+          </div>
+        ) : null}
+      </div>
+
       {/* Optional top cards (keep if you like) */}
       <div style={{ marginBottom: 16 }}>
         <DashboardOverview />
@@ -207,8 +344,17 @@ export default function App() {
       </div>
 
       <div style={{ marginTop: 12, fontSize: 12, opacity: 0.6 }}>
-        API: {API} — Needs endpoint: <code>/dashboard/projects</code>
+        API: {API}
       </div>
+    </div>
+  );
+}
+
+function Field({ label, value }: { label: string; value: string }) {
+  return (
+    <div style={{ border: "1px solid #e5e5e5", borderRadius: 10, padding: 10, minHeight: 64 }}>
+      <div style={{ fontSize: 12, opacity: 0.7 }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700, marginTop: 4, wordBreak: "break-word" }}>{value}</div>
     </div>
   );
 }
