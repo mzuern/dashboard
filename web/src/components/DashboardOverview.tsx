@@ -1,6 +1,13 @@
+import ProjectHeaderCard from "./ProjectHeaderCard";
+
 export function DashboardOverview() {
   return (
     <div style={{ marginTop: 24 }}>
+      {/* ✅ Project header panel goes at the top */}
+      <div style={{ marginBottom: 16 }}>
+        <ProjectHeaderCard />
+      </div>
+
       {/* =====================
           Metrics Row
       ====================== */}
@@ -39,10 +46,18 @@ export function DashboardOverview() {
         >
           <thead>
             <tr style={{ borderBottom: "1px solid #eee" }}>
-              <th align="left" style={{ paddingBottom: 8 }}>Worker</th>
-              <th align="left" style={{ paddingBottom: 8 }}>Hours Logged</th>
-              <th align="left" style={{ paddingBottom: 8 }}>Flags Raised</th>
-              <th align="left" style={{ paddingBottom: 8 }}>Current Task</th>
+              <th align="left" style={{ paddingBottom: 8 }}>
+                Worker
+              </th>
+              <th align="left" style={{ paddingBottom: 8 }}>
+                Hours Logged
+              </th>
+              <th align="left" style={{ paddingBottom: 8 }}>
+                Flags Raised
+              </th>
+              <th align="left" style={{ paddingBottom: 8 }}>
+                Current Task
+              </th>
             </tr>
           </thead>
           <tbody>
