@@ -1,6 +1,7 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, Text
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, UniqueConstraint
 from sqlalchemy.orm import relationship
 from db import Base
+from sqlalchemy.sql import func as sqlfunc
 
 class Project(Base):
     __tablename__ = "projects"
@@ -66,3 +67,38 @@ class Issue(Base):
 
     project = relationship("Project", back_populates="issues")
     device = relationship("Device", back_populates="issues")
+
+
+class QcProject(Base):
+    __tablename__ = "qc_projects"
+    id = Column(Integer, primary_key=True, index=True)
+
+    project_number = Column(String, nullable=False, unique=True, index=True)  # job #
+    customer_name = Column(String, nullable=True)
+    project_manager = Column(String, nullable=True)
+    date = Column(String, nullable=True)
+
+    eng_issue_count = Column(Integer, nullable=False, default=0)
+    mfg_issue_count = Column(Integer, nullable=False, default=0)
+    open_issue_count = Column(Integer, nullable=False, default=0)
+    closed_issue_count = Column(Integer, nullable=False, default=0)
+    oldest_open_days = Column(Integer, nullable=True)
+
+    last_scanned_at = Column(DateTime, server_default=sqlfunc.now(), onupdate=sqlfunc.now())
+
+    pdfs = relationship("QcPdf", back_populates="project", cascade="all, delete")
+
+
+class QcPdf(Base):
+    __tablename__ = "qc_pdfs"
+    id = Column(Integer, primary_key=True, index=True)
+
+    project_id = Column(Integer, ForeignKey("qc_projects.id"), nullable=False)
+    filename = Column(String, nullable=False)
+    sha256 = Column(String, nullable=False, index=True)
+
+    scanned_at = Column(DateTime, server_default=sqlfunc.now())
+
+    project = relationship("QcProject", back_populates="pdfs")
+
+    __table_args__ = (UniqueConstraint("sha256", name="uq_qc_pdf_sha256"),)

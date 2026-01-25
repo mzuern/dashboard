@@ -23,7 +23,7 @@ def crop_header_band(img: Image.Image) -> Image.Image:
     """
     w, h = img.size
     top = 0
-    bottom = int(h * 0.18)  # ~top 18% (tune if needed)
+    bottom = int(h * 0.14)  # ~top 18% (tune if needed)
     return img.crop((0, top, w, bottom))
 
 

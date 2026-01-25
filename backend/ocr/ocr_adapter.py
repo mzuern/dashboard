@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Callable
 
 import numpy as np
 from PIL import Image
@@ -72,28 +72,35 @@ def ocr_header_image(
     rec_texts = _ocr_with_tesseract(img)
     return {'rec_texts': rec_texts, 'engine': 'tesseract'}
 
-def ocr_image_to_text(pil_image):
+def ocr_image_to_text(pil_image: Image.Image) -> str:
     """
-    Compatibility wrapper.
-    Returns plain text from a PIL image using whichever OCR engine is configured.
+    Single stable OCR entrypoint for the rest of the app.
+    It calls the OCR function that this repo actually provides.
+
+    We only reference names after checking they exist (keeps Pylance happy).
     """
-    # If your adapter already has a function for this, call it here.
-    # Try common names first to avoid breaking existing code.
-    if "ocr_header_image" in globals():
-        return ocr_header_image(pil_image)
+    # 1) Preferred: you already have a function like ocr_header_image(img) -> str
+    fn: Callable[[Image.Image], Any] | None = globals().get("ocr_header_image")  # type: ignore
+    if callable(fn):
+        out = fn(pil_image)
+        return out if isinstance(out, str) else str(out)
 
-    if "ocr_image" in globals():
-        return ocr_image(pil_image)
+    # 2) Alternative: maybe you have ocr_pil_image(img) -> str
+    fn = globals().get("ocr_pil_image")  # type: ignore
+    if callable(fn):
+        out = fn(pil_image)
+        return out if isinstance(out, str) else str(out)
 
-    if "extract_text_from_image" in globals():
-        return extract_text_from_image(pil_image)
+    # 3) As a last resort, if there is a configured engine object with a method
+    engine = globals().get("OCR_ENGINE") or globals().get("ocr_engine")  # type: ignore
+    if engine is not None:
+        meth = getattr(engine, "image_to_text", None)
+        if callable(meth):
+            out = meth(pil_image)
+            return out if isinstance(out, str) else str(out)
 
-    # If your adapter uses a class/object, fall back to a known callable
-    if "ocr_engine" in globals() and hasattr(ocr_engine, "image_to_text"):
-        return ocr_engine.image_to_text(pil_image)
-
-    raise ImportError(
-        "No compatible OCR function found. Expected one of: "
-        "ocr_header_image, ocr_image, extract_text_from_image, "
-        "or an ocr_engine.image_to_text method."
+    raise RuntimeError(
+        "ocr_image_to_text: No OCR callable found. "
+        "Expected one of: ocr_header_image(img), ocr_pil_image(img), "
+        "or OCR_ENGINE/ocr_engine.image_to_text(img)."
     )

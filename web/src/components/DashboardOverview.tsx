@@ -23,65 +23,6 @@ export function DashboardOverview() {
         <Metric title="Open Issues" value="7" />
         <Metric title="Avg Issue Age" value="2.4 days" />
       </div>
-
-      {/* =====================
-          Worker / Labor Table
-      ====================== */}
-      <div
-        style={{
-          marginTop: 24,
-          border: "1px solid #ddd",
-          borderRadius: 10,
-          padding: 16,
-        }}
-      >
-        <h3 style={{ marginTop: 0 }}>Labor & Accountability</h3>
-
-        <table
-          style={{
-            width: "100%",
-            borderCollapse: "collapse",
-            fontSize: 14,
-          }}
-        >
-          <thead>
-            <tr style={{ borderBottom: "1px solid #eee" }}>
-              <th align="left" style={{ paddingBottom: 8 }}>
-                Worker
-              </th>
-              <th align="left" style={{ paddingBottom: 8 }}>
-                Hours Logged
-              </th>
-              <th align="left" style={{ paddingBottom: 8 }}>
-                Flags Raised
-              </th>
-              <th align="left" style={{ paddingBottom: 8 }}>
-                Current Task
-              </th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Alex</td>
-              <td>12.5</td>
-              <td>2</td>
-              <td>House Wire</td>
-            </tr>
-            <tr>
-              <td>Jamie</td>
-              <td>9.0</td>
-              <td>3</td>
-              <td>Panel Integration</td>
-            </tr>
-            <tr>
-              <td>Riley</td>
-              <td>14.2</td>
-              <td>2</td>
-              <td>Testing</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
     </div>
   );
 }

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fitz
+import hashlib
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -16,7 +17,7 @@ from sqlalchemy import func
 
 
 from db import Base, SessionLocal, engine
-from models import Device, Drawing, Issue, Project
+from models import Device, Drawing, Issue, Project, QcProject, QcPdf
 from ocr_config import TESSERACT_CMD
 from ocr.pdf_render import render_pdf_page_to_pil, render_pdf_bytes_page_to_pil
 from ocr.header_extract import extract_page1_header
@@ -108,47 +109,28 @@ def health():
 # Dashboard Summary (UI expects this)
 # =========================
 @app.get("/dashboard/projects")
-def dashboard_projects():
-    """Return a lightweight project summary for the QC Metrics Dashboard UI.
+def dashboard_projects(db: Session = Depends(get_db)):
+    rows = (
+        db.query(QcProject)
+        .order_by(QcProject.project_number.asc())
+        .all()
+    )
 
-    This endpoint exists because the React dashboard calls /dashboard/projects.
-    Until you wire real DB-backed QC/issue data, we generate summaries from the
-    sample PDFs in backend/data/incoming_pdfs by extracting the page-1 header.
-    """
+    return [
+        {
+            "project_id": p.id,
+            "project_number": p.project_number,
+            "customer_name": p.customer_name or "(unknown)",
+            "project_manager": p.project_manager or "(unknown)",
+            "mfg_issue_count": p.mfg_issue_count,
+            "eng_issue_count": p.eng_issue_count,
+            "open_issue_count": p.open_issue_count,
+            "closed_issue_count": p.closed_issue_count,
+            "oldest_open_days": p.oldest_open_days,
+        }
+        for p in rows
+    ]
 
-    if not INCOMING_PDF_DIR.exists():
-        return []
-
-    rows = []
-    for idx, pdf_path in enumerate(sorted(INCOMING_PDF_DIR.glob("*.pdf")), start=1):
-        try:
-            img = render_pdf_page_to_pil(pdf_path, page_index=0, dpi=200)
-            header = extract_page1_header(img, ocr_func=ocr_header_image)
-        except Exception:
-            header = {}
-
-        project_number = (
-            header.get("job_number")
-            or header.get("project_number")
-            or pdf_path.stem.split("_")[0]
-            or str(idx)
-        )
-
-        rows.append(
-            {
-                "project_id": idx,
-                "project_number": str(project_number),
-                "customer_name": header.get("project_name") or "(from PDF header)",
-                "project_manager": header.get("project_manager") or "(unknown)",
-                "mfg_issue_count": 0,
-                "eng_issue_count": 0,
-                "open_issue_count": 0,
-                "closed_issue_count": 0,
-                "oldest_open_days": None,
-            }
-        )
-
-    return rows
 
 
 
@@ -381,6 +363,58 @@ def ingest_issue_rows(file: str):
         "rows": all_rows
     }
 
+@app.post("/ingest/scan")
+def ingest_scan(file: str = Query(..., description="PDF filename inside backend/data/incoming_pdfs"),
+                db: Session = Depends(get_db)):
+    pdf_path = INCOMING_PDF_DIR / file
+    if not pdf_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found: {pdf_path.name}")
+
+    pdf_bytes = pdf_path.read_bytes()
+    sha = hashlib.sha256(pdf_bytes).hexdigest()
+
+    # If already scanned, return existing project summary
+    existing_pdf = db.query(QcPdf).filter(QcPdf.sha256 == sha).first()
+    if existing_pdf:
+        p = db.query(QcProject).filter(QcProject.id == existing_pdf.project_id).first()
+        return {"ok": True, "deduped": True, "project_number": p.project_number if p else None}
+
+    # Extract header (better than regex-only)
+    img = render_pdf_page_to_pil(pdf_path, page_index=0, dpi=200)
+    header = extract_page1_header(img, ocr_func=ocr_header_image)
+
+    project_number = (header.get("job_number") or header.get("project_number") or pdf_path.stem.split("_")[0])
+    customer_name = header.get("project_name")
+    project_manager = header.get("project_manager")
+    date = header.get("date")
+
+    # Use your existing parser to find writeup pages + count eng/mfg marks
+    parsed = parse_qc_pdf(pdf_bytes)
+    eng = int(parsed.get("writeups", {}).get("engineering", 0))
+    mfg = int(parsed.get("writeups", {}).get("manufacturing", 0))
+
+    # Upsert project by project_number
+    proj = db.query(QcProject).filter(QcProject.project_number == str(project_number)).first()
+    if not proj:
+        proj = QcProject(project_number=str(project_number))
+        db.add(proj)
+
+    proj.customer_name = customer_name or proj.customer_name
+    proj.project_manager = project_manager or proj.project_manager
+    proj.date = date or proj.date
+
+    proj.eng_issue_count = eng
+    proj.mfg_issue_count = mfg
+    proj.open_issue_count = eng + mfg
+    proj.closed_issue_count = 0
+    proj.oldest_open_days = None
+
+    db.flush()  # ensures proj.id
+
+    db.add(QcPdf(project_id=proj.id, filename=file, sha256=sha))
+    db.commit()
+
+    return {"ok": True, "deduped": False, "project_number": proj.project_number, "eng": eng, "mfg": mfg}
 
 
 @app.get("/projects/{project_id}/testsheets", response_model=TestSheetOut)
