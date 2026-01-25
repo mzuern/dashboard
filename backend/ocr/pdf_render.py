@@ -39,3 +39,12 @@ def render_pdf_bytes_page_to_pil(pdf_bytes: bytes, page_index: int = 0, dpi: int
         return img
     finally:
         doc.close()
+
+def render_pdf_path_page_to_pil(pdf_path: str, page_index: int, dpi: int = 300):
+    """
+    Convenience wrapper so callers can pass a file path
+    instead of raw PDF bytes.
+    """
+    with open(pdf_path, "rb") as f:
+        pdf_bytes = f.read()
+    return render_pdf_bytes_page_to_pil(pdf_bytes, page_index=page_index, dpi=dpi)

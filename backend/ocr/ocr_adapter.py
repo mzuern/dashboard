@@ -71,3 +71,29 @@ def ocr_header_image(
 
     rec_texts = _ocr_with_tesseract(img)
     return {'rec_texts': rec_texts, 'engine': 'tesseract'}
+
+def ocr_image_to_text(pil_image):
+    """
+    Compatibility wrapper.
+    Returns plain text from a PIL image using whichever OCR engine is configured.
+    """
+    # If your adapter already has a function for this, call it here.
+    # Try common names first to avoid breaking existing code.
+    if "ocr_header_image" in globals():
+        return ocr_header_image(pil_image)
+
+    if "ocr_image" in globals():
+        return ocr_image(pil_image)
+
+    if "extract_text_from_image" in globals():
+        return extract_text_from_image(pil_image)
+
+    # If your adapter uses a class/object, fall back to a known callable
+    if "ocr_engine" in globals() and hasattr(ocr_engine, "image_to_text"):
+        return ocr_engine.image_to_text(pil_image)
+
+    raise ImportError(
+        "No compatible OCR function found. Expected one of: "
+        "ocr_header_image, ocr_image, extract_text_from_image, "
+        "or an ocr_engine.image_to_text method."
+    )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fitz
 
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -20,6 +21,10 @@ from ocr_config import TESSERACT_CMD
 from ocr.pdf_render import render_pdf_page_to_pil, render_pdf_bytes_page_to_pil
 from ocr.header_extract import extract_page1_header
 from ocr.ocr_adapter import ocr_header_image
+from ocr.page_discovery import discover_issue_table_pages
+from ocr.pdf_render import render_pdf_path_page_to_pil
+from ocr.mark_reader import read_eng_mfg_marks
+from ocr.issue_text_reader import read_issue_row_texts
 from schemas import (
     DrawingOut,
     IssueCreate,
@@ -318,6 +323,66 @@ def get_device_issues(device_id: int, db: Session = Depends(get_db)):
 # =========================
 # Testsheet (Device list + open issue markers)
 # =========================
+
+
+@app.get("/ingest/discover")
+def ingest_discover(file: str):
+    pdf_path = f"backend/data/incoming_pdfs/{file}"
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"PDF not found or unreadable: {e}")
+
+    result = discover_issue_table_pages(pdf_path, doc.page_count)
+    doc.close()
+    return {"file": file, **result}
+
+
+@app.get("/ingest/issues/rows")
+def ingest_issue_rows(file: str):
+    """
+    Returns row-by-row Eng/Mfg marks + (optional) OCR text for each row,
+    across all discovered issue table pages.
+    """
+    pdf_path = f"backend/data/incoming_pdfs/{file}"
+    try:
+        doc = fitz.open(pdf_path)
+    except Exception as e:
+        raise HTTPException(status_code=404, detail=f"PDF not found or unreadable: {e}")
+
+    discovered = discover_issue_table_pages(pdf_path, doc.page_count)
+    pages = discovered["issue_table_pages"]
+
+    all_rows = []
+    for p in pages:
+        img = render_pdf_path_page_to_pil(pdf_path, page_index=p, dpi=250)
+
+        marks = read_eng_mfg_marks(img, rows=12)
+        texts = read_issue_row_texts(img, rows=12)
+
+        for m in marks:
+            txt = texts[m.row_index] if m.row_index < len(texts) else ""
+            # Only keep rows that have something (either mark or text)
+            if (m.eng_marked or m.mfg_marked) or (txt and len(txt) > 2):
+                all_rows.append({
+                    "page": p,
+                    "row": m.row_index,
+                    "engineering": m.eng_marked,
+                    "manufacturing": m.mfg_marked,
+                    "eng_ink": m.eng_ratio,
+                    "mfg_ink": m.mfg_ratio,
+                    "text": txt
+                })
+
+    doc.close()
+    return {
+        "file": file,
+        "pages": pages,
+        "rows": all_rows
+    }
+
+
+
 @app.get("/projects/{project_id}/testsheets", response_model=TestSheetOut)
 def get_testsheet(project_id: int, db: Session = Depends(get_db)):
     devices = (
