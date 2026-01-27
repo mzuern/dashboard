@@ -132,6 +132,27 @@ def dashboard_projects(db: Session = Depends(get_db)):
     ]
 
 
+@app.get("/dashboard/latest")
+def dashboard_latest(db: Session = Depends(get_db)):
+    p = (
+        db.query(QcProject)
+        .order_by(QcProject.last_scanned_at.is_(None), QcProject.last_scanned_at.desc(), QcProject.id.desc())
+        .first()
+    )
+    if not p:
+        raise HTTPException(status_code=404, detail="No scans yet")
+
+    return {
+        "project_number": p.project_number,
+        "customer_name": p.customer_name or "(unknown)",
+        "project_manager": p.project_manager or "(unknown)",
+        "date": p.date,
+        "eng_issue_count": p.eng_issue_count,
+        "mfg_issue_count": p.mfg_issue_count,
+        "open_issue_count": p.open_issue_count,
+        "oldest_open_days": p.oldest_open_days,
+        "last_scanned_at": p.last_scanned_at,
+    }
 
 
 
@@ -377,6 +398,9 @@ def ingest_scan(file: str = Query(..., description="PDF filename inside backend/
     existing_pdf = db.query(QcPdf).filter(QcPdf.sha256 == sha).first()
     if existing_pdf:
         p = db.query(QcProject).filter(QcProject.id == existing_pdf.project_id).first()
+        if p:
+            p.last_scanned_at = func.now()
+            db.commit()
         return {"ok": True, "deduped": True, "project_number": p.project_number if p else None}
 
     # Extract header (better than regex-only)
@@ -408,10 +432,66 @@ def ingest_scan(file: str = Query(..., description="PDF filename inside backend/
     proj.open_issue_count = eng + mfg
     proj.closed_issue_count = 0
     proj.oldest_open_days = None
+    proj.last_scanned_at = func.now()
 
     db.flush()  # ensures proj.id
 
     db.add(QcPdf(project_id=proj.id, filename=file, sha256=sha))
+    db.commit()
+
+    return {"ok": True, "deduped": False, "project_number": proj.project_number, "eng": eng, "mfg": mfg}
+
+
+@app.post("/ingest/scan/upload")
+async def ingest_scan_upload(file: UploadFile = File(...), db: Session = Depends(get_db)):
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty upload")
+
+    sha = hashlib.sha256(data).hexdigest()
+
+    existing_pdf = db.query(QcPdf).filter(QcPdf.sha256 == sha).first()
+    if existing_pdf:
+        p = db.query(QcProject).filter(QcProject.id == existing_pdf.project_id).first()
+        if p:
+            p.last_scanned_at = func.now()
+            db.commit()
+        return {"ok": True, "deduped": True, "project_number": p.project_number if p else None}
+
+    try:
+        img = render_pdf_bytes_page_to_pil(data, page_index=0, dpi=200)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Failed to render PDF: {e}")
+
+    header = extract_page1_header(img, ocr_func=ocr_header_image)
+
+    project_number = (header.get("job_number") or header.get("project_number") or Path(file.filename or "upload").stem)
+    customer_name = header.get("project_name")
+    project_manager = header.get("project_manager")
+    date = header.get("date")
+
+    parsed = parse_qc_pdf(data)
+    eng = int(parsed.get("writeups", {}).get("engineering", 0))
+    mfg = int(parsed.get("writeups", {}).get("manufacturing", 0))
+
+    proj = db.query(QcProject).filter(QcProject.project_number == str(project_number)).first()
+    if not proj:
+        proj = QcProject(project_number=str(project_number))
+        db.add(proj)
+
+    proj.customer_name = customer_name or proj.customer_name
+    proj.project_manager = project_manager or proj.project_manager
+    proj.date = date or proj.date
+
+    proj.eng_issue_count = eng
+    proj.mfg_issue_count = mfg
+    proj.open_issue_count = eng + mfg
+    proj.closed_issue_count = 0
+    proj.oldest_open_days = None
+    proj.last_scanned_at = func.now()
+
+    db.flush()
+    db.add(QcPdf(project_id=proj.id, filename=file.filename or "upload.pdf", sha256=sha))
     db.commit()
 
     return {"ok": True, "deduped": False, "project_number": proj.project_number, "eng": eng, "mfg": mfg}
@@ -602,4 +682,3 @@ async def qc_parse(file: UploadFile = File(...)):
         return JSONResponse(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-

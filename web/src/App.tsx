@@ -1,77 +1,32 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import axios from "axios";
-import { DashboardOverview } from "./components/DashboardOverview";
 
 const API = "http://127.0.0.1:8000";
 
-type ProjectSummary = {
-  project_id: number;
-  project_number: string; // e.g. "4009"
-  customer_name: string; // e.g. "Acme Power"
-  project_manager: string; // e.g. "Dan"
-  mfg_issue_count: number; // total issues tagged manufacturing
-  eng_issue_count: number; // total issues tagged engineering
-  open_issue_count: number; // total open
-  closed_issue_count: number; // total closed
-  oldest_open_days: number | null; // null if no open issues
+type LatestProject = {
+  project_number: string;
+  customer_name: string;
+  project_manager: string;
+  date: string | null;
+  eng_issue_count: number;
+  mfg_issue_count: number;
+  open_issue_count: number;
+  oldest_open_days: number | null;
+  last_scanned_at: string | null;
 };
 
-type SortKey =
-  | "project_number"
-  | "customer_name"
-  | "project_manager"
-  | "mfg_issue_count"
-  | "eng_issue_count"
-  | "open_issue_count"
-  | "closed_issue_count"
-  | "oldest_open_days";
-
-type SortDir = "asc" | "desc";
-
 export default function App() {
-  const [rows, setRows] = useState<ProjectSummary[]>([]);
-  const [selectedProject, setSelectedProject] = useState<string>("ALL");
-
-  // ---- page-1 header extractor (PDF ingest) ----
   const [pdfFiles, setPdfFiles] = useState<string[]>([]);
   const [selectedPdf, setSelectedPdf] = useState<string>("");
-  const [headerBusy, setHeaderBusy] = useState(false);
-  const [headerError, setHeaderError] = useState<string | null>(null);
-  const [header, setHeader] = useState<any | null>(null);
+  const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [uploadKey, setUploadKey] = useState(0);
+  const [scanBusy, setScanBusy] = useState(false);
+  const [scanError, setScanError] = useState<string | null>(null);
 
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [latest, setLatest] = useState<LatestProject | null>(null);
+  const [latestBusy, setLatestBusy] = useState(false);
+  const [latestError, setLatestError] = useState<string | null>(null);
 
-  const [sortKey, setSortKey] = useState<SortKey>("project_number");
-  const [sortDir, setSortDir] = useState<SortDir>("asc");
-
-  // -------- load dashboard rows on start --------
-  useEffect(() => {
-    let mounted = true;
-    setError(null);
-    setBusy(true);
-
-    axios
-      .get<ProjectSummary[]>(`${API}/dashboard/projects`)
-      .then((r) => {
-        if (!mounted) return;
-        setRows(r.data ?? []);
-      })
-      .catch((e) => {
-        if (!mounted) return;
-        setError(readAxiosError(e));
-      })
-      .finally(() => {
-        if (!mounted) return;
-        setBusy(false);
-      });
-
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  // -------- load available sample PDFs (optional) --------
   useEffect(() => {
     axios
       .get<{ files: string[] }>(`${API}/ingest/files`)
@@ -86,273 +41,191 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  async function runHeaderExtract() {
-  if (!selectedPdf) return;
-  setHeaderError(null);
-  setHeaderBusy(true);
-  try {
-    await axios.post(`${API}/ingest/scan`, null, { params: { file: selectedPdf } });
+  useEffect(() => {
+    void fetchLatest(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    // refresh dashboard from DB
-    const r = await axios.get<ProjectSummary[]>(`${API}/dashboard/projects`);
-    setRows(r.data ?? []);
-  } catch (e) {
-    setHeaderError(readAxiosError(e));
-  } finally {
-    setHeaderBusy(false);
-  }
-}
-
-
-  async function uploadAndExtract(file: File) {
-    setHeaderError(null);
-    setHeaderBusy(true);
-    setHeader(null);
+  async function fetchLatest(silent: boolean) {
+    if (!silent) setLatestError(null);
+    setLatestBusy(true);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const r = await axios.post(`${API}/ingest/page1/upload`, fd, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-      setHeader(r.data);
-    } catch (e) {
-      setHeaderError(readAxiosError(e));
+      const r = await axios.get<LatestProject>(`${API}/dashboard/latest`);
+      setLatest(r.data ?? null);
+    } catch (e: any) {
+      if (e?.response?.status === 404) {
+        setLatest(null);
+        setLatestError(null);
+      } else if (!silent) {
+        setLatestError(readAxiosError(e));
+      }
     } finally {
-      setHeaderBusy(false);
+      setLatestBusy(false);
     }
   }
 
-  const projectOptions = useMemo(() => {
-    const unique = new Map<string, { label: string; value: string }>();
-    for (const r of rows) {
-      unique.set(r.project_number, {
-        label: `${r.project_number} — ${r.customer_name}`,
-        value: r.project_number,
-      });
-    }
-    return [{ label: "ALL Projects", value: "ALL" }, ...Array.from(unique.values())];
-  }, [rows]);
+  function clearUpload() {
+    setUploadFile(null);
+    setUploadKey((k) => k + 1);
+  }
 
-  const filteredRows = useMemo(() => {
-    if (selectedProject === "ALL") return rows;
-    return rows.filter((r) => r.project_number === selectedProject);
-  }, [rows, selectedProject]);
-
-  const sortedRows = useMemo(() => {
-    const copy = [...filteredRows];
-
-    copy.sort((a, b) => {
-      const av = a[sortKey];
-      const bv = b[sortKey];
-
-      // null handling (oldest_open_days can be null)
-      if (av == null && bv == null) return 0;
-      if (av == null) return 1;
-      if (bv == null) return -1;
-
-      // number vs string
-      if (typeof av === "number" && typeof bv === "number") {
-        return sortDir === "asc" ? av - bv : bv - av;
+  async function runScan() {
+    if (scanBusy) return;
+    if (!uploadFile && !selectedPdf) return;
+    setScanError(null);
+    setScanBusy(true);
+    try {
+      if (uploadFile) {
+        const fd = new FormData();
+        fd.append("file", uploadFile);
+        await axios.post(`${API}/ingest/scan/upload`, fd, {
+          headers: { "Content-Type": "multipart/form-data" },
+        });
+      } else {
+        await axios.post(`${API}/ingest/scan`, null, { params: { file: selectedPdf } });
       }
-
-      const as = String(av).toLowerCase();
-      const bs = String(bv).toLowerCase();
-      if (as < bs) return sortDir === "asc" ? -1 : 1;
-      if (as > bs) return sortDir === "asc" ? 1 : -1;
-      return 0;
-    });
-
-    return copy;
-  }, [filteredRows, sortKey, sortDir]);
-
-  function toggleSort(key: SortKey) {
-    if (key === sortKey) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortKey(key);
-      setSortDir("asc");
+      await fetchLatest(true);
+      clearUpload();
+    } catch (e) {
+      setScanError(readAxiosError(e));
+    } finally {
+      setScanBusy(false);
     }
   }
 
   return (
     <div style={{ fontFamily: "system-ui", padding: 16, maxWidth: 1400, margin: "0 auto" }}>
       <h1 style={{ margin: 0 }}>QC Metrics Dashboard</h1>
-      <p style={{ marginTop: 6, opacity: 0.75 }}>
-        Project summary: customer, PM, engineering vs manufacturing, and aging open items
-      </p>
+      <p style={{ marginTop: 6, opacity: 0.75 }}>Single-job QC view with scan + save workflow</p>
 
-      {error ? (
-        <div
-          style={{
-            background: "#fee2e2",
-            border: "1px solid #fecaca",
-            color: "#7f1d1d",
-            padding: 12,
-            borderRadius: 10,
-            marginBottom: 12,
-            whiteSpace: "pre-wrap",
-          }}
-        >
-          <b>Error:</b> {error}
-        </div>
-      ) : null}
-
-      <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 12 }}>
-        <label>
-          Project:&nbsp;
-          <select value={selectedProject} onChange={(e) => setSelectedProject(e.target.value)}>
-            {projectOptions.map((p) => (
-              <option key={p.value} value={p.value}>
-                {p.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        {busy ? <span style={{ opacity: 0.75 }}>Loading…</span> : null}
-      </div>
-
-      {/* ===== Two-column layout ===== */}
       <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-        {/* LEFT: Dashboard */}
         <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ marginBottom: 16 }}>
-            <DashboardOverview />
+          <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700 }}>Job Header</div>
+                <div style={{ fontSize: 12, opacity: 0.7 }}>Latest scanned job</div>
+              </div>
+              {latestBusy ? <div style={{ fontSize: 12, opacity: 0.6 }}>Refreshing...</div> : null}
+            </div>
+
+            {latestError ? (
+              <div
+                style={{
+                  marginTop: 12,
+                  background: "#fee2e2",
+                  border: "1px solid #fecaca",
+                  color: "#7f1d1d",
+                  padding: 10,
+                  borderRadius: 10,
+                  whiteSpace: "pre-wrap",
+                }}
+              >
+                <b>Error:</b> {latestError}
+              </div>
+            ) : null}
+
+            {!latest ? (
+              <div style={{ marginTop: 12, opacity: 0.7 }}>No scans yet. Run Scan & Save to load a job.</div>
+            ) : (
+              <div
+                style={{
+                  marginTop: 12,
+                  display: "grid",
+                  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                  gap: 12,
+                }}
+              >
+                <Field label="Project #" value={latest.project_number || "-"} />
+                <Field label="Customer" value={latest.customer_name || "-"} />
+                <Field label="Project Manager" value={latest.project_manager || "-"} />
+                <Field label="Date" value={latest.date || "-"} />
+                <Field label="Last Scanned" value={formatTimestamp(latest.last_scanned_at)} />
+              </div>
+            )}
           </div>
 
-          <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12 }}>
-            <h2 style={{ marginTop: 0 }}>Projects</h2>
-
-            {sortedRows.length === 0 ? (
-              <div style={{ opacity: 0.7 }}>{busy ? "Loading…" : "No projects found."}</div>
+          <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 16 }}>
+            <div style={{ fontSize: 18, fontWeight: 700, marginBottom: 12 }}>Issue Summary</div>
+            {!latest ? (
+              <div style={{ opacity: 0.7 }}>No issue summary yet.</div>
             ) : (
-              <table style={{ width: "100%", borderCollapse: "collapse" }}>
-                <thead>
-                  <tr>
-                    <Th
-                      label="Project #"
-                      onClick={() => toggleSort("project_number")}
-                      active={sortKey === "project_number"}
-                      dir={sortDir}
-                    />
-                    <Th
-                      label="Customer"
-                      onClick={() => toggleSort("customer_name")}
-                      active={sortKey === "customer_name"}
-                      dir={sortDir}
-                    />
-                    <Th
-                      label="PM"
-                      onClick={() => toggleSort("project_manager")}
-                      active={sortKey === "project_manager"}
-                      dir={sortDir}
-                    />
-                    <Th
-                      label="MFG Issues"
-                      onClick={() => toggleSort("mfg_issue_count")}
-                      active={sortKey === "mfg_issue_count"}
-                      dir={sortDir}
-                    />
-                    <Th
-                      label="ENG Issues"
-                      onClick={() => toggleSort("eng_issue_count")}
-                      active={sortKey === "eng_issue_count"}
-                      dir={sortDir}
-                    />
-                    <Th
-                      label="Open"
-                      onClick={() => toggleSort("open_issue_count")}
-                      active={sortKey === "open_issue_count"}
-                      dir={sortDir}
-                    />
-                    <Th
-                      label="Closed"
-                      onClick={() => toggleSort("closed_issue_count")}
-                      active={sortKey === "closed_issue_count"}
-                      dir={sortDir}
-                    />
-                    <Th
-                      label="Oldest Open (days)"
-                      onClick={() => toggleSort("oldest_open_days")}
-                      active={sortKey === "oldest_open_days"}
-                      dir={sortDir}
-                    />
-                  </tr>
-                </thead>
-
-                <tbody>
-                  {sortedRows.map((r) => {
-                    const resolvedLabel = r.open_issue_count === 0 ? "Yes" : "No";
-                    return (
-                      <tr key={`${r.project_id}-${r.project_number}`} style={{ borderTop: "1px solid #eee" }}>
-                        <td style={{ padding: "10px 6px", fontWeight: 700 }}>{r.project_number}</td>
-                        <td style={{ padding: "10px 6px" }}>{r.customer_name}</td>
-                        <td style={{ padding: "10px 6px" }}>{r.project_manager}</td>
-                        <td style={{ padding: "10px 6px" }}>{r.mfg_issue_count}</td>
-                        <td style={{ padding: "10px 6px" }}>{r.eng_issue_count}</td>
-                        <td style={{ padding: "10px 6px" }}>{r.open_issue_count}</td>
-                        <td style={{ padding: "10px 6px" }}>{r.closed_issue_count}</td>
-                        <td style={{ padding: "10px 6px" }}>
-                          {r.oldest_open_days == null ? <span style={{ opacity: 0.7 }}>—</span> : r.oldest_open_days}
-                          <span style={{ marginLeft: 10, fontSize: 12, opacity: 0.6 }}>
-                            Resolved: {resolvedLabel}
-                          </span>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, minmax(0, 1fr))", gap: 12 }}>
+                <Metric label="ENG Issues" value={String(latest.eng_issue_count)} />
+                <Metric label="MFG Issues" value={String(latest.mfg_issue_count)} />
+                <Metric label="Open Issues" value={String(latest.open_issue_count)} />
+                <Metric
+                  label="Oldest Open (days)"
+                  value={latest.oldest_open_days == null ? "-" : String(latest.oldest_open_days)}
+                />
+              </div>
             )}
           </div>
 
           <div style={{ marginTop: 12, fontSize: 12, opacity: 0.6 }}>API: {API}</div>
         </div>
 
-        {/* RIGHT: PDF tools + viewer placeholder */}
         <div style={{ width: 420, flex: "0 0 420px" }}>
           <div style={{ border: "1px solid #ddd", borderRadius: 10, padding: 12, marginBottom: 16 }}>
             <h2 style={{ marginTop: 0, marginBottom: 8 }}>PDF Tools</h2>
             <div style={{ fontSize: 12, opacity: 0.7, marginBottom: 10 }}>
-              Pick a sample PDF or upload one, then click Extract. (Uses <code>/ingest/page1</code>)
+              Pick a sample PDF or upload one, then click Scan & Save.
             </div>
 
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
-              <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                Sample:
-                <select value={selectedPdf} onChange={(e) => setSelectedPdf(e.target.value)} disabled={!pdfFiles.length}>
-                  {pdfFiles.length ? (
-                    pdfFiles.map((f) => (
-                      <option key={f} value={f}>
-                        {f}
-                      </option>
-                    ))
-                  ) : (
-                    <option value="">(no sample PDFs found)</option>
-                  )}
-                </select>
-              </label>
+            <div style={{ display: "grid", gap: 12 }}>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+                <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  Sample:
+                  <select
+                    value={selectedPdf}
+                    onChange={(e) => setSelectedPdf(e.target.value)}
+                    disabled={!pdfFiles.length || Boolean(uploadFile)}
+                  >
+                    {pdfFiles.length ? (
+                      pdfFiles.map((f) => (
+                        <option key={f} value={f}>
+                          {f}
+                        </option>
+                      ))
+                    ) : (
+                      <option value="">(no sample PDFs found)</option>
+                    )}
+                  </select>
+                </label>
 
-              <button onClick={runHeaderExtract} disabled={!selectedPdf || headerBusy}>
-                {headerBusy ? "Extracting…" : "Extract"}
+                <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  Upload:
+                  <input
+                    key={uploadKey}
+                    type="file"
+                    accept="application/pdf"
+                    disabled={scanBusy}
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] ?? null;
+                      setUploadFile(f);
+                    }}
+                  />
+                </label>
+
+                {uploadFile ? (
+                  <div style={{ fontSize: 12, opacity: 0.75 }}>Selected: {uploadFile.name}</div>
+                ) : (
+                  <div style={{ fontSize: 12, opacity: 0.6 }}>No upload selected</div>
+                )}
+
+                {uploadFile ? (
+                  <button onClick={clearUpload} disabled={scanBusy}>
+                    Clear Upload
+                  </button>
+                ) : null}
+              </div>
+
+              <button onClick={runScan} disabled={scanBusy || (!uploadFile && !selectedPdf)}>
+                {scanBusy ? "Scanning..." : "Scan & Save"}
               </button>
-
-              <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                Upload:
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  disabled={headerBusy}
-                  onChange={(e) => {
-                    const f = e.target.files?.[0];
-                    if (f) uploadAndExtract(f);
-                    e.currentTarget.value = "";
-                  }}
-                />
-              </label>
             </div>
 
-            {headerError ? (
+            {scanError ? (
               <div
                 style={{
                   marginTop: 10,
@@ -364,33 +237,7 @@ export default function App() {
                   whiteSpace: "pre-wrap",
                 }}
               >
-                <b>Error:</b> {headerError}
-              </div>
-            ) : null}
-
-            {header ? (
-              <div style={{ marginTop: 10, display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
-                <Field label="Job #" value={header.job_number || header.project_number || "—"} />
-                <Field label="Project Manager" value={header.project_manager || "—"} />
-                <Field label="Date" value={header.date || "—"} />
-                <Field label="Source" value={header.source_pdf || "—"} />
-
-                <div style={{ gridColumn: "1 / -1" }}>
-                  <details>
-                    <summary style={{ cursor: "pointer" }}>Raw OCR text (debug)</summary>
-                    <pre
-                      style={{
-                        marginTop: 8,
-                        padding: 10,
-                        background: "#f7f7f7",
-                        borderRadius: 8,
-                        overflowX: "auto",
-                      }}
-                    >
-                      {String(header.raw_text ?? "")}
-                    </pre>
-                  </details>
-                </div>
+                <b>Error:</b> {scanError}
               </div>
             ) : null}
           </div>
@@ -400,7 +247,7 @@ export default function App() {
             <div style={{ fontSize: 13, opacity: 0.7 }}>
               Reserved space for a viewer + highlight overlays.
               <br />
-              We’ll drop the viewer here later without changing the layout again.
+              We'll drop the viewer here later without changing the layout again.
             </div>
           </div>
         </div>
@@ -418,38 +265,27 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Th({
-  label,
-  onClick,
-  active,
-  dir,
-}: {
-  label: string;
-  onClick: () => void;
-  active: boolean;
-  dir: "asc" | "desc";
-}) {
+function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <th
-      onClick={onClick}
+    <div
       style={{
-        textAlign: "left",
-        padding: "8px 6px",
-        borderBottom: "1px solid #eee",
-        cursor: "pointer",
-        userSelect: "none",
-        whiteSpace: "nowrap",
+        background: "#f7f7f7",
+        borderRadius: 10,
+        padding: 14,
+        border: "1px solid #e5e5e5",
       }}
-      title="Click to sort"
     >
-      {label}{" "}
-      {active ? (
-        <span style={{ fontSize: 12, opacity: 0.7 }}>{dir === "asc" ? "▲" : "▼"}</span>
-      ) : (
-        <span style={{ fontSize: 12, opacity: 0.25 }}>↕</span>
-      )}
-    </th>
+      <div style={{ fontSize: 12, opacity: 0.7 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, marginTop: 6 }}>{value}</div>
+    </div>
   );
+}
+
+function formatTimestamp(ts: string | null | undefined) {
+  if (!ts) return "-";
+  const d = new Date(ts);
+  if (Number.isNaN(d.getTime())) return ts;
+  return d.toLocaleString();
 }
 
 function readAxiosError(e: any): string {

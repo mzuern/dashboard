@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 from typing import Dict, Any, List, Tuple
-import re
+import logging
+import time
 
 import fitz  # PyMuPDF
 import numpy as np
@@ -9,31 +10,46 @@ from PIL import Image
 
 from ocr.ocr_adapter import ocr_image_to_text
 from ocr.header_extract import extract_page1_header
-from ocr.pdf_render import render_pdf_bytes_page_to_pil
 
+logger = logging.getLogger(__name__)
 
 # -----------------------------
-# PDF -> images
+# Discovery
 # -----------------------------
-def pdf_to_pil_images(pdf_bytes: bytes, dpi: int = 220) -> List[Image.Image]:
-    """
-    Render each PDF page to PIL Image.
-    Uses your existing renderer so we don't fork logic.
-    """
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    pages: List[Image.Image] = []
-    for i in range(len(doc)):
-        pages.append(render_pdf_bytes_page_to_pil(pdf_bytes, page_index=i, dpi=dpi))
-    return pages
+# Tighten keywords to reduce false positives.
+WRITEUP_KEYWORDS = (
+    "test comments and/or rework required",
+    "rework required",
+    "test comments",
+)
+
+DISCOVERY_DPI = 110
+DISCOVERY_BAND_RATIO = 0.20  # top band for keyword OCR
+MARK_COUNT_DPI = 170         # moderate DPI for reliable row segmentation
+
+# If you really want an early-exit, use "stop after N consecutive non-matches AFTER first match".
+STOP_AFTER_CONSECUTIVE_MISSES = 6
+
+
+def _render_page_from_doc(doc: fitz.Document, page_index: int, dpi: int) -> Image.Image:
+    page = doc.load_page(page_index)
+    zoom = dpi / 72.0
+    mat = fitz.Matrix(zoom, zoom)
+    pix = page.get_pixmap(matrix=mat, alpha=False)
+    return Image.frombytes("RGB", (pix.width, pix.height), pix.samples)
+
+
+def looks_like_writeup_page(page: Image.Image, band_ratio: float = DISCOVERY_BAND_RATIO) -> bool:
+    w, h = page.size
+    band = page.crop((0, 0, w, int(h * band_ratio)))
+    text = ocr_image_to_text(band).lower()
+    return any(k in text for k in WRITEUP_KEYWORDS)
 
 
 # -----------------------------
 # Header extraction (page 1)
 # -----------------------------
 def extract_header_info(page0: Image.Image) -> Dict[str, str | None]:
-    """
-    Use the header_extract pipeline you already have (keywords + stop rules).
-    """
     d = extract_page1_header(page0, ocr_func=ocr_image_to_text)
     return {
         "project_number": d.get("project_number"),
@@ -45,111 +61,123 @@ def extract_header_info(page0: Image.Image) -> Dict[str, str | None]:
 
 
 # -----------------------------
-# Page discovery: find "writeup" pages
-# -----------------------------
-WRITEUP_KEYWORDS = (
-    "rework",
-    "write up",
-    "write-up",
-    "test comments",
-    "comments",
-)
-
-def looks_like_writeup_page(page: Image.Image) -> bool:
-    """
-    OCR only the top band (fast) and keyword match.
-    """
-    w, h = page.size
-    band = page.crop((0, 0, w, int(h * 0.18)))
-    text = ocr_image_to_text(band).lower()
-    return any(k in text for k in WRITEUP_KEYWORDS)
-
-
-# -----------------------------
-# ENG / MFG mark counting (no Tesseract)
+# ENG / MFG issue counting (ROW-BASED)
 # -----------------------------
 def _to_gray_np(img: Image.Image) -> np.ndarray:
     return np.array(img.convert("L"))
 
 
 def _roi(img: Image.Image, x0: float, y0: float, x1: float, y1: float) -> Image.Image:
-    """
-    ROI coords are expressed as ratios [0..1] of page width/height.
-    """
     w, h = img.size
     return img.crop((int(w * x0), int(h * y0), int(w * x1), int(h * y1)))
 
 
-def _count_marks_in_column(col_img: Image.Image) -> int:
+def _find_horizontal_lines_y(ink: np.ndarray) -> List[int]:
     """
-    Very simple mark detector:
-    - convert to grayscale
-    - binarize (adaptive-ish threshold via percentile)
-    - count connected-ish blobs by scanning rows
-
-    This is intentionally lightweight and avoids OpenCV.
-    It works well when boxes are consistent and marks are dark.
+    ink: 2D uint8 array with 1=ink, 0=paper
+    Returns y positions (centers) of strong horizontal lines.
     """
-    g = _to_gray_np(col_img)
-
-    # threshold: treat dark pixels as ink
-    thresh = np.percentile(g, 35)  # tune if needed (lower = stricter)
-    ink = (g < thresh).astype(np.uint8)
-
-    # collapse each row to "ink density"
     row_density = ink.mean(axis=1)
+    # Horizontal grid lines are among the densest rows.
+    line_cut = float(np.percentile(row_density, 94))  # tune 92-96 if needed
+    is_line = row_density >= line_cut
 
-    # A "mark row" tends to have a spike vs empty box
-    # Use a dynamic threshold so it adapts to scan darkness
-    cut = max(0.04, float(np.percentile(row_density, 85)) * 0.65)
-    hits = row_density > cut
-
-    # Count contiguous hit-runs (each run ≈ one checked box row)
-    count = 0
+    ys: List[int] = []
     in_run = False
-    min_run = max(3, int(len(hits) * 0.004))  # ignore tiny noise runs
-    run_len = 0
+    start = 0
+    for y, v in enumerate(is_line):
+        if v and not in_run:
+            in_run = True
+            start = y
+        elif not v and in_run:
+            in_run = False
+            end = y - 1
+            ys.append((start + end) // 2)
+    if in_run:
+        ys.append((start + len(is_line) - 1) // 2)
 
-    for v in hits:
-        if v:
-            if not in_run:
-                in_run = True
-                run_len = 1
-            else:
-                run_len += 1
-        else:
-            if in_run:
-                if run_len >= min_run:
-                    count += 1
-                in_run = False
-                run_len = 0
+    # de-duplicate near neighbors
+    dedup: List[int] = []
+    for y in ys:
+        if not dedup or abs(y - dedup[-1]) > 6:
+            dedup.append(y)
+    return dedup
 
-    if in_run and run_len >= min_run:
-        count += 1
 
-    return count
+def _row_bands_from_lines(line_ys: List[int], min_height: int) -> List[Tuple[int, int]]:
+    bands: List[Tuple[int, int]] = []
+    for a, b in zip(line_ys, line_ys[1:]):
+        y0 = a + 2
+        y1 = b - 2
+        if (y1 - y0) >= min_height:
+            bands.append((y0, y1))
+    return bands
 
 
 def count_eng_mfg(page: Image.Image) -> Dict[str, int]:
     """
-    Count marks under ENG and MFG columns.
-    Because your layout is consistent, we use fixed ROIs (ratios).
-    You tune these once and you're done.
-
-    Based on your screenshot, ENG/MFG are a narrow pair of columns near the right side.
-    Adjust x ratios if needed.
+    Counts issues as ROWS in the write-up table by:
+    - cropping the write-up table
+    - finding horizontal separators
+    - for each row band, checking ink density inside ENG/MFG cells
     """
-    # 1) Crop the table region where the boxes live (skip header and footer)
-    # Tune y0/y1 as needed depending on where the checklist starts.
-    table = _roi(page, x0=0.05, y0=0.20, x1=0.95, y1=0.92)
 
-    # 2) Now take two narrow vertical slices where ENG and MFG boxes are.
-    # These numbers are starting guesses. We'll tune quickly using 1–2 PDFs.
-    eng_col = _roi(table, x0=0.72, y0=0.00, x1=0.80, y1=1.00)
-    mfg_col = _roi(table, x0=0.80, y0=0.00, x1=0.88, y1=1.00)
+    # 1) Crop the full table region.
+    # NOTE: tune once for your template.
+    table = _roi(page, x0=0.03, y0=0.10, x1=0.97, y1=0.94)
 
-    eng = _count_marks_in_column(eng_col)
-    mfg = _count_marks_in_column(mfg_col)
+    g = _to_gray_np(table)
+
+    # 2) Binarize ink/paper with percentile threshold
+    thr = np.percentile(g, 35)
+    ink = (g < thr).astype(np.uint8)
+
+    # 3) Find horizontal grid lines -> row segmentation
+    line_ys = _find_horizontal_lines_y(ink)
+    if len(line_ys) < 8:
+        # not enough structure to safely count
+        return {"engineering": 0, "manufacturing": 0}
+
+    # 4) Build row bands
+    min_row_h = 18
+    bands = _row_bands_from_lines(line_ys, min_height=min_row_h)
+
+    # 5) Define ENG/MFG cell x-ranges within TABLE
+    # These ratios are based on your layout: Dept columns near the right.
+    tw = ink.shape[1]
+    eng_x0, eng_x1 = int(tw * 0.78), int(tw * 0.84)
+    mfg_x0, mfg_x1 = int(tw * 0.84), int(tw * 0.90)
+
+    def mark_present(y0: int, y1: int, x0: int, x1: int) -> bool:
+        cell = ink[y0:y1, x0:x1]
+        # ignore borders: only center portion of cell width
+        w = cell.shape[1]
+        cx0 = int(w * 0.20)
+        cx1 = int(w * 0.80)
+        center = cell[:, cx0:cx1]
+        dens = float(center.mean())
+        # threshold tuned to avoid counting gridlines as marks
+        return dens > 0.07  # tune 0.06–0.10 if needed
+
+    eng = 0
+    mfg = 0
+
+    # Optional: skip the header band if the first few bands are the column header area
+    # Heuristic: ignore the first 1-2 bands (often table header)
+    start_idx = 2 if len(bands) > 6 else 0
+
+    for (y0, y1) in bands[start_idx:]:
+        has_eng = mark_present(y0, y1, eng_x0, eng_x1)
+        has_mfg = mark_present(y0, y1, mfg_x0, mfg_x1)
+
+        # count row once
+        if has_eng and not has_mfg:
+            eng += 1
+        elif has_mfg and not has_eng:
+            mfg += 1
+        elif has_eng and has_mfg:
+            # rare: choose deterministic behavior
+            eng += 1
 
     return {"engineering": int(eng), "manufacturing": int(mfg)}
 
@@ -158,21 +186,67 @@ def count_eng_mfg(page: Image.Image) -> Dict[str, int]:
 # Main parser
 # -----------------------------
 def parse_qc_pdf(pdf_bytes: bytes) -> Dict[str, Any]:
-    pages = pdf_to_pil_images(pdf_bytes, dpi=220)
-    header = extract_header_info(pages[0])
+    t0 = time.perf_counter()
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
+    discovery_s = 0.0
+    count_s = 0.0
+    candidates: List[int] = []
+    header: Dict[str, Any] = {}
     totals = {"engineering": 0, "manufacturing": 0}
-    writeup_pages: List[int] = []
 
-    for idx, page in enumerate(pages):
-        if looks_like_writeup_page(page):
-            writeup_pages.append(idx)
+    try:
+        if doc.page_count == 0:
+            return {"writeups": totals, "writeup_pages": []}
+
+        # Header extraction at higher DPI for accuracy
+        header_img = _render_page_from_doc(doc, page_index=0, dpi=220)
+        header = extract_header_info(header_img)
+
+        # Discovery pass: low DPI, OCR only top band
+        discovery_start = time.perf_counter()
+        misses_after_first = 0
+        seen_first = False
+
+        for idx in range(doc.page_count):
+            page_img = _render_page_from_doc(doc, page_index=idx, dpi=DISCOVERY_DPI)
+            if looks_like_writeup_page(page_img, band_ratio=DISCOVERY_BAND_RATIO):
+                candidates.append(idx)
+                seen_first = True
+                misses_after_first = 0
+            else:
+                if seen_first:
+                    misses_after_first += 1
+                    if misses_after_first >= STOP_AFTER_CONSECUTIVE_MISSES:
+                        break
+
+        discovery_s = time.perf_counter() - discovery_start
+
+        # Count marks on candidate pages, at moderate DPI
+        count_start = time.perf_counter()
+        for idx in candidates:
+            page = _render_page_from_doc(doc, page_index=idx, dpi=MARK_COUNT_DPI)
             counts = count_eng_mfg(page)
             totals["engineering"] += counts["engineering"]
             totals["manufacturing"] += counts["manufacturing"]
+        count_s = time.perf_counter() - count_start
+
+    finally:
+        doc.close()
+
+    total_s = time.perf_counter() - t0
+    logger.info(
+        "qc_parse discovery_s=%.3f count_s=%.3f total_s=%.3f candidates=%s totals=%s",
+        discovery_s,
+        count_s,
+        total_s,
+        candidates,
+        totals,
+    )
 
     return {
         **header,
         "writeups": totals,
-        "writeup_pages": writeup_pages,
+        "writeup_pages": candidates,
+        "candidate_pages": candidates,
     }
