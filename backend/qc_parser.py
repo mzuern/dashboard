@@ -78,8 +78,11 @@ def _find_horizontal_lines_y(ink: np.ndarray) -> List[int]:
     Returns y positions (centers) of strong horizontal lines.
     """
     row_density = ink.mean(axis=1)
-    # Horizontal grid lines are among the densest rows.
-    line_cut = float(np.percentile(row_density, 94))  # tune 92-96 if needed
+    # Use a high percentile so only true full-width grid lines qualify.
+    # A lower value (e.g. 94) causes dense checkmark rows to be misidentified
+    # as grid lines, splitting one table row into multiple bands and
+    # double-counting a single mark.
+    line_cut = float(np.percentile(row_density, 97))
     is_line = row_density >= line_cut
 
     ys: List[int] = []
@@ -92,14 +95,19 @@ def _find_horizontal_lines_y(ink: np.ndarray) -> List[int]:
         elif not v and in_run:
             in_run = False
             end = y - 1
-            ys.append((start + end) // 2)
+            # Require at least 2 consecutive pixels to suppress single-pixel noise
+            if (end - start + 1) >= 2:
+                ys.append((start + end) // 2)
     if in_run:
-        ys.append((start + len(is_line) - 1) // 2)
+        run_len = (len(is_line) - 1) - start + 1
+        if run_len >= 2:
+            ys.append((start + len(is_line) - 1) // 2)
 
-    # de-duplicate near neighbors
+    # De-duplicate neighbors within 12 px to handle thick printed lines
+    # whose ink may register across several consecutive pixel rows.
     dedup: List[int] = []
     for y in ys:
-        if not dedup or abs(y - dedup[-1]) > 6:
+        if not dedup or abs(y - dedup[-1]) > 12:
             dedup.append(y)
     return dedup
 
@@ -156,8 +164,10 @@ def count_eng_mfg(page: Image.Image) -> Dict[str, int]:
         cx1 = int(w * 0.80)
         center = cell[:, cx0:cx1]
         dens = float(center.mean())
-        # threshold tuned to avoid counting gridlines as marks
-        return dens > 0.07  # tune 0.06–0.10 if needed
+        # Raised from 0.07: at the 35th-percentile binarization, background
+        # noise already puts blank cells near 0.07-0.09.  Using 0.10 gives
+        # a clear gap between noise and a real pen/check mark.
+        return dens > 0.10
 
     eng = 0
     mfg = 0
