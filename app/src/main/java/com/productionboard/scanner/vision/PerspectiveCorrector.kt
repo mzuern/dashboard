@@ -19,12 +19,11 @@ data class Quad(val topLeft: Corner, val topRight: Corner, val bottomRight: Corn
 data class QuadDetectionResult(val quad: Quad?, val areaRatio: Double)
 
 /**
- * Finds the whiteboard's boundary as a quadrilateral so the stitched
- * mosaic (which still has whatever skew the camera sweep left behind)
- * can be warped into a flat, document-scan-style rectangle: edges,
- * dilate to close gaps, largest 4-point contour. When detection isn't
- * confident, [CalibrationScreen]/the corner-adjustment step lets the
- * user drag the corners manually instead - this never hard-fails.
+ * Finds the whiteboard's boundary as a quadrilateral within a single
+ * photo's board-area crop, so it can be warped into a flat,
+ * document-scan-style rectangle: edges, dilate to close gaps, largest
+ * 4-point contour. When detection isn't confident, the caller falls
+ * back to using the crop as-is - this never hard-fails.
  */
 class PerspectiveCorrector {
 

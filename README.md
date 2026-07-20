@@ -1,22 +1,43 @@
-# Production Board Scanner (Android)
+# Production Board Photo-to-Email (Android)
 
-A standalone native Android app that scans a physical production
-whiteboard with the phone's camera and generates a daily status report -
-Project Number, Customer, and Estimated Days Remaining for each row.
-Everything runs on-device: camera capture, image stitching, perspective
+A standalone native Android app that turns photos of a physical
+production whiteboard into an editable daily status email - Project
+Number, Customer, and Estimated Days Remaining for each row. Everything
+runs on-device: photo capture/selection, image cropping and perspective
 correction, row detection, and OCR. No server, no cloud services, no AI
 APIs, no internet access required after installation.
 
 **Read this before anything else:** [Known limitations](#known-limitations) -
 none of this code has been compiled or run on a device. See why below.
 
+## Workflow
+
+1. **Take or choose photos** of the whiteboard. The board doesn't need
+   to fit in one photo - take as many as you need to cover it, from
+   whatever angle is convenient.
+2. **Process Photos** - each photo is read locally and run through the
+   extraction pipeline independently.
+3. **Review** the extracted rows: correct any field, delete a false
+   row, mark a row "Complete" or "Unknown", remove duplicates (the app
+   flags likely duplicates across photos for you), or add a missed
+   project by hand. Uncheck "Include" on any row you don't want in the
+   email.
+4. **Generate the email** - included rows become a subject + body you
+   can copy or hand off to any app via Android's share sheet.
+
+There is no automatic sending, no photo upload, no account, and no
+report history - this is a single-pass tool: photos in, email text out.
+
 ## Stack
 
-Kotlin, Jetpack Compose, CameraX, OpenCV for Android (`org.opencv:opencv`,
-Maven Central), Tesseract OCR via `com.rmtheis:tess-two` (JNI wrapper,
-Maven Central), Room + DataStore for local storage. MVVM with
+Kotlin, Jetpack Compose, the system Camera app (via a `TakePicture`
+intent + `FileProvider`) and Android's Photo Picker for photo
+acquisition, OpenCV for Android (`org.opencv:opencv`, Maven Central) for
+perspective correction, Tesseract OCR via `com.rmtheis:tess-two` (JNI
+wrapper, Maven Central), Room + DataStore for local storage. MVVM with
 `StateFlow`. No React Native / Flutter / Capacitor / Electron / WebView -
-this is a true native app.
+this is a true native app, and there is no CameraX dependency since
+photo capture is handed off to the system Camera app.
 
 ## Building
 
@@ -47,9 +68,12 @@ or open the APK on-device (enable "Install unknown apps" for whichever
 app you transferred it with, if sideloading rather than using Android
 Studio's Run button).
 
-The app requests only the **Camera** permission on first launch. No
-storage permission is used - everything is written to app-private
-storage, cleaned up per the Settings screen's data controls.
+**The app itself requests no runtime permissions.** "Take Photo" launches
+the system Camera app (which handles its own camera permission) and
+writes the result to this app's private storage via `FileProvider`;
+"Choose Photos" uses Android's Photo Picker, which needs no storage
+permission at all. Everything is written to app-private cache storage,
+optionally cleared automatically after generating an email (Settings).
 
 ## Known limitations
 
@@ -57,83 +81,80 @@ storage, cleaned up per the Settings screen's data controls.
 Android SDK, and no working path to install one.** Concretely: this
 environment's network policy blocks `dl.google.com` (Android SDK
 platform/build-tools) and `maven.google.com` redirects to that same
-blocked host (needed for *every* AndroidX/Compose/CameraX artifact and
-the Android Gradle Plugin itself). Maven Central worked fine, which is
-why OpenCV and the OCR library resolve from there - but the app module
+blocked host (needed for *every* AndroidX/Compose artifact and the
+Android Gradle Plugin itself). Maven Central worked fine, which is why
+OpenCV and the OCR library resolve from there - but the app module
 itself couldn't be configured, let alone compiled, in that environment.
 
 **What this means concretely:**
 - Zero compiler verification. No `./gradlew build`, no lint pass, no
   IDE red-squiggle check has touched this code. Package/class/method
-  names for CameraX, OpenCV's Java bindings, Compose, and tess-two are
-  written from documented API knowledge, not verified against the
-  actual artifacts.
+  names for Compose, OpenCV's Java bindings, tess-two, and the
+  `FileProvider`/Photo Picker/`TakePicture` APIs are written from
+  documented API knowledge, not verified against the actual artifacts.
 - Zero runtime verification. Nothing has been run on an emulator or
-  physical device. The vision pipeline in particular (`MotionTracker`,
-  `ImageStitcher`, `PerspectiveCorrector`, `BoardDetector`) is a direct
-  Kotlin port of algorithms that *were* built and browser-tested in an
-  earlier version of this project (a PWA using OpenCV.js - same
-  algorithms, different language bindings), but the port itself is
-  unverified.
+  physical device.
 - **Do the first build/run yourself in Android Studio before trusting
   any of this.** Expect to fix real compile errors - most likely
   candidates: an OpenCV Java API signature that doesn't match exactly
-  (`Calib3d`/`Imgproc`/`features2d` method overloads), a CameraX
-  `ResolutionSelector` API detail, or a Compose API that moved between
-  versions. These should be small, mechanical fixes given the shape of
-  the code is right, not a rewrite - but budget time for it.
-- The four riskiest pieces, in order, matching what was flagged before
+  (`Imgproc` method overloads), a Compose API that moved between
+  versions, or a `FileProvider` path/authority mismatch. These should be
+  small, mechanical fixes given the shape of the code is right, not a
+  rewrite - but budget time for it.
+- The riskiest pieces, in order, matching what was flagged before
   writing any code:
-  1. **Live frame tracking + stitching quality** - tuning
-     `MIN_SHARPNESS`/`MIN_TRACKING_CONFIDENCE`/threshold constants in
-     `ScanViewModel.kt` against a real camera and a real whiteboard.
-     These values are carried over from the browser version's testing,
-     not re-tuned for a phone camera.
-  2. **Glare and lighting variance** - `GLARE_THRESHOLD` and
-     `LOW_LIGHT_THRESHOLD` are heuristics; expect to adjust after
-     testing under your actual shop lighting.
-  3. **Handwritten "Days Remaining" entries** - Tesseract (any version)
-     is weak on handwriting. The confidence-threshold review flow is
-     the mitigation, not a fix.
-  4. **Memory on a full-resolution stitch** on a mid-range phone -
-     `MAX_CANVAS_DIMENSION` in `ImageStitcher.kt` caps the mosaic size
-     as a safety valve, but it hasn't been load-tested.
+  1. **Row detection accuracy on a real photo** - `BoardDetector`
+     derives row positions from the calibrated `rowHeightPct` plus a
+     best-effort horizontal-line snap; it hasn't been tuned against a
+     real whiteboard photo taken at an angle or with uneven lighting.
+  2. **Perspective correction trigger** - `PhotoProcessor` only warps
+     the board-area crop when `PerspectiveCorrector` finds a confident
+     4-point board edge (`areaRatio > 0.5`); a photo where the board
+     doesn't fill enough of the frame silently skips correction and
+     uses the raw crop, which may skew row alignment.
+  3. **Handwritten "Days Remaining" / "Customer" entries** - Tesseract
+     (any version) is weak on handwriting. The confidence-threshold
+     review flow is the mitigation, not a fix.
+  4. **Calibration usability** - the drag-to-define board
+     area/row-spacing/column-region flow in `CalibrationScreen` is new
+     UI that hasn't been tried on an actual touchscreen against a real
+     sample photo.
 
 ## Physical-device testing checklist
 
 Once it builds and installs:
 
-- [ ] App launches, camera permission prompt appears, granting it shows
-      the live preview
-- [ ] Denying permission shows the explanation + "Open App Settings"
-      path, and re-granting from there recovers without restarting the
-      app
-- [ ] Scan Board: sweep across a real whiteboard slowly - coverage map
-      should trend toward green where you've actually pointed the
-      camera, "Move slower"/"Hold steady" should trigger convincingly
-      when you (deliberately) whip the phone around or blur the shot
-- [ ] Scan auto-stops once coverage crosses the threshold, or "Done
-      Scanning" works manually and (if coverage is short) shows the
-      confirm-incomplete dialog
-- [ ] Corner adjustment: detected corners are draggable and land where
-      expected; try both a case where auto-detection finds the board
-      edge and a low-contrast case where it falls back to the default
-      inset quad
-- [ ] Stitched board image looks like a flat document, not a curved
-      panorama, after perspective correction
-- [ ] Review screen: rows with genuinely unclear OCR are flagged red;
-      editing a field and checking Verified clears the flag; Add/Delete
-      row work
-- [ ] Report screen: Copy Subject/Body actually populate the clipboard;
-      "Share via Email/Other App" opens the Android share sheet and
-      Gmail/Outlook/etc. all receive the right text
+- [ ] "Take Photo" launches the system Camera app and the captured photo
+      appears as a thumbnail back in the app
+- [ ] "Choose Photos" opens the system Photo Picker and multi-selecting
+      photos adds all of them as thumbnails
+- [ ] Removing a thumbnail deletes it from the selection; rotating a
+      thumbnail visibly rotates the preview and carries through to
+      processing
+- [ ] "Process Photos (N)" runs OCR locally with no network activity
+      (try airplane mode) and lands on the Review screen
+- [ ] Review screen: rows with genuinely unclear OCR are flagged
+      "Needs Review"; possible duplicates across photos are flagged
+      "Possible Duplicate"; editing a field clears the relevant flag;
+      unchecking "Include" removes a row from the generated email
+      without deleting it; Add/Delete row work; tapping a row's source
+      thumbnail shows the cropped source image it was read from
+- [ ] "+ Add More Photos" returns to photo capture, and processing the
+      new photos merges the new rows into the existing review list
+      (including re-running duplicate detection against the combined
+      set) rather than replacing it
+- [ ] Email screen: Copy Subject/Body actually populate the clipboard;
+      "Share" opens the Android share sheet and Gmail/Outlook/etc. all
+      receive the right text
 - [ ] Kill the app mid-review (recent apps swipe-away) and relaunch -
       the draft should still be there
-- [ ] Turn on airplane mode after install, confirm a full scan → review
-      → report cycle works with zero connectivity
-- [ ] Settings: Calibration screen's draggable region boxes move
-      correctly and persist after Save; try recalibrating for a
-      differently-laid-out board
+- [ ] Settings: "Delete photos from this device after generating the
+      email" actually clears app-private photo storage when enabled,
+      and leaves photos in place when disabled
+- [ ] Settings → Calibration: the board-area rectangle, first-row/
+      row-height lines, and the three column regions are all draggable
+      against a real sample photo and persist after Save; try
+      recalibrating for a differently-laid-out board
 - [ ] Test on at least one small-screen and one large-screen/tablet
       device if available
 
@@ -142,24 +163,26 @@ Once it builds and installs:
 The board layout is entirely data-driven via `BoardTemplate`
 (`domain/BoardTemplate.kt` for the code default; editable at runtime
 from **Settings → Open Calibration**) - no code changes needed for a
-different whiteboard:
+different whiteboard. All positions are stored as fractions (0-1) of the
+photo/crop they were defined against, so one calibration keeps working
+across photos of different sizes or framing.
 
-1. Scan the new board once (or use Manual Entry to get to Settings if a
-   scan isn't practical yet).
+1. Take or choose at least one sample photo of the board on the main
+   screen first - Calibration uses your first selected photo as the
+   backdrop for defining regions.
 2. Open **Settings → Open Calibration**.
-3. The preview rectangle represents one project row at the board's
-   configured aspect ratio. Drag each colored box (Project Number,
-   Customer, Days Remaining) to where that field sits within a row;
-   adjust Width%/Height% below if a box needs resizing.
-4. Adjust **Board Width/Height** (the canonical resolution the corrected
-   board image is warped to), **Row Height**, and **Top Margin** to
-   match the real board's proportions and row spacing.
-5. Save. The template is validated (regions must stay inside the row,
-   positive size, etc.) before it's persisted to DataStore.
-6. With **Debug Mode** on (Settings), the scan screen and review screen
-   surface which rows snapped to a detected grid line vs. fell back to
-   template math, plus per-field OCR confidence - the fastest way to
-   tell whether a region needs nudging.
+3. **Board area**: drag the rectangle to outline just the whiteboard
+   itself within the photo (crop out background/wall/floor).
+4. **Row spacing**: drag the "first row" line to the top of the first
+   project row, and the "second row" line to the top of the next row -
+   the row height is derived from the gap between them and reused for
+   every row below.
+5. **Columns**: drag the three colored boxes (Project Number, Customer,
+   Days Remaining) to where each field sits within a single row; adjust
+   Width%/Height% below if a box needs resizing.
+6. Save. The template is validated (regions must have positive size and
+   stay within bounds, row height must be non-trivial, etc.) before
+   it's persisted to DataStore.
 
 ## Extending with additional fields
 
@@ -167,51 +190,55 @@ different whiteboard:
   `FieldRegions`/`BoardTemplate` (`domain/BoardTemplate.kt`), give it a
   whitelist + a normalizer in `ocr/OCRValidator.kt` (mirror
   `projectNumber`), extend `RegionExtractor`'s field loop, and add the
-  column to `ReviewRow`/`ReviewScreen`/`ReportGenerator`. Every other
-  module (camera, motion tracking, coverage, stitching, perspective
-  correction, board/row detection) is unaware of field semantics and
-  needs no changes.
+  column to `ReviewRow`/`ReviewScreen`/`EmailGenerator`. Calibration UI
+  in `CalibrationScreen` would also need a fourth draggable region.
 - **New OCR engine**: implement `ocr/OCRProvider.kt`'s interface and
-  swap it in `ScanViewModel`. `TesseractOCRProvider` is a reference
-  implementation; any replacement must stay fully local (no network
-  calls).
-- **Better seam blending**: `ImageStitcher.warpAndComposite` currently
-  does last-frame-wins compositing (`Mat.copyTo` with a mask). A
-  multi-band or feathered blend would slot in there without touching
-  anything else in the pipeline.
+  swap it in `ProcessingViewModel`. `TesseractOCRProvider` is a
+  reference implementation; any replacement must stay fully local (no
+  network calls).
+- **Different duplicate-matching rules**: `DuplicateDetector` is a
+  single, self-contained object - the exact-project-number and
+  similar-customer/nearby-days heuristics can be tuned or replaced there
+  without touching the rest of the pipeline.
 
 ## Architecture
 
 ```
 app/src/main/java/com/productionboard/scanner/
-  camera/      CameraController, YuvToBitmap        CameraX binding, frame conversion
-  scanning/    MotionTracker, CoverageTracker,        live tracking + keyframe selection
-               FrameSelector, ScanViewModel           + the pipeline orchestrator
-  vision/      ImageStitcher, PerspectiveCorrector    ORB/homography mosaic + board-edge warp
-  board/       BoardDetector, RegionExtractor,        row detection, field cropping,
-               BoardTemplateRepository                template persistence façade
-  ocr/         OCRProvider, TesseractOCRProvider,     swappable OCR engine + validation/
-               OCRValidator, TessDataInstaller        normalization + asset extraction
-  review/      ReviewViewModel                        editable row list + draft persistence
-  report/      ReportGenerator, ReportViewModel        subject/body text + history
-  storage/     ReportDatabase (Room), DraftRepository,
-               ReportHistoryRepository                local persistence
-  settings/    SettingsRepository, SettingsViewModel   DataStore-backed app settings
+  photo/       SelectedPhoto, PhotoStorage,          photo acquisition (camera
+               PhotoCaptureViewModel                 intent + Photo Picker) + app-private
+                                                      cache storage
+  processing/  ImageLoader, PhotoProcessor,           per-photo pipeline: EXIF/manual
+               DuplicateDetector                      rotation, crop, perspective
+                                                       correction, OCR, dedup across photos
+  vision/      PerspectiveCorrector                   board-edge quad detection + warp
+  board/       BoardDetector, RegionExtractor,         row detection, field cropping,
+               BoardTemplateRepository                 template persistence façade
+  ocr/         OCRProvider, TesseractOCRProvider,      swappable OCR engine + validation/
+               OCRValidator, TessDataInstaller         normalization + asset extraction
+  review/      ReviewViewModel                         editable row list + draft persistence
+  report/      EmailGenerator                          subject/body text generation
+  storage/     DraftDatabase (Room), DraftRepository    local single-draft persistence
+  settings/    SettingsRepository, SettingsViewModel    DataStore-backed app settings
   domain/      BoardTemplate, ReviewModels,             shared data model
                AppSettings
   ui/          screens/, components/, theme/,           Compose UI
                navigation/
 ```
 
-`ScanViewModel` is the only class that knows the *order* the vision
-pipeline runs in (stitch → correct perspective → detect rows → extract
-regions → OCR); every other module is independently usable and
-testable.
+`PhotoProcessor` is the only class that knows the *order* a single
+photo's pipeline runs in (orientation correction → crop to board area →
+best-effort perspective correction → detect rows → extract regions →
+OCR); `ProcessingViewModel` runs it once per photo and combines the
+results, and `DuplicateDetector` flags likely duplicates across the
+combined set. Every other module is independently usable and testable.
 
 ## Privacy
 
 No image, OCR text, or project data ever leaves the device - there is no
-network code in this app at all. The generated report is never sent
+network code in this app at all. The generated email is never sent
 automatically; only Copy-to-clipboard and Android's own share sheet
 (which hands text to whatever app the user explicitly picks) are
-provided. No analytics, crash reporting, telemetry, or ads SDKs.
+provided. No analytics, crash reporting, telemetry, or ads SDKs. Photos
+live in app-private cache storage and can be auto-cleared after
+generating an email (Settings), or removed individually at any time.

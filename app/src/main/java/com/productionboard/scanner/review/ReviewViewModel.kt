@@ -7,6 +7,7 @@ import com.productionboard.scanner.domain.FieldKey
 import com.productionboard.scanner.domain.FieldResult
 import com.productionboard.scanner.domain.ReviewRow
 import com.productionboard.scanner.ocr.OCRValidator
+import com.productionboard.scanner.processing.DuplicateDetector
 import com.productionboard.scanner.storage.DraftRepository
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -14,11 +15,14 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+private const val DEFAULT_CONFIDENCE_THRESHOLD = 65f
+
 /**
- * Owns the editable review list: loads/persists the draft (so an
- * interrupted review survives an app kill), and applies edits without
- * ever silently discarding a low-confidence value - editing a field just
- * re-runs it through [OCRValidator] as a manual, full-confidence entry.
+ * Owns the combined, editable list of candidate rows: loads/persists the
+ * draft (so an interrupted review survives an app kill), and applies
+ * edits without ever silently discarding a low-confidence value -
+ * editing a field just re-runs it through [OCRValidator] as a manual,
+ * full-confidence entry.
  */
 class ReviewViewModel(application: Application) : AndroidViewModel(application) {
     private val draftRepository = DraftRepository(application)
@@ -43,7 +47,13 @@ class ReviewViewModel(application: Application) : AndroidViewModel(application) 
         persist()
     }
 
-    fun updateField(rowId: String, field: FieldKey, text: String, confidenceThreshold: Float) {
+    /** Appends rows from newly processed photos and re-checks the *combined* list for duplicates. */
+    fun addRows(newRows: List<ReviewRow>) {
+        _rows.update { current -> DuplicateDetector.markPossibleDuplicates(current + newRows) }
+        persist()
+    }
+
+    fun updateField(rowId: String, field: FieldKey, text: String, confidenceThreshold: Float = DEFAULT_CONFIDENCE_THRESHOLD) {
         _rows.update { rows ->
             rows.map { row ->
                 if (row.id != rowId) return@map row
@@ -63,8 +73,8 @@ class ReviewViewModel(application: Application) : AndroidViewModel(application) 
         persist()
     }
 
-    fun toggleVerified(rowId: String) {
-        _rows.update { rows -> rows.map { if (it.id == rowId) it.copy(verified = !it.verified) else it } }
+    fun toggleIncluded(rowId: String) {
+        _rows.update { rows -> rows.map { if (it.id == rowId) it.copy(included = !it.included) else it } }
         persist()
     }
 
@@ -74,8 +84,19 @@ class ReviewViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun addBlankRow() {
-        val blank = FieldResult(rawText = "", value = "", confidence = 100f, formatValid = false)
-        _rows.update { rows -> rows + ReviewRow(id = "manual-${System.currentTimeMillis()}", rowIndex = rows.size, projectNumber = blank, customer = blank, daysRemaining = blank) }
+        val blank = FieldResult(rawText = "", value = "", confidence = 100f, formatValid = false, preprocessingVariant = "manual")
+        _rows.update { rows ->
+            rows + ReviewRow(
+                id = "manual-${System.currentTimeMillis()}",
+                sourcePhotoIndex = -1,
+                rowIndex = rows.size,
+                projectNumber = blank,
+                customer = blank,
+                daysRemaining = blank,
+                included = true,
+                needsReview = true,
+            )
+        }
         persist()
     }
 

@@ -63,6 +63,7 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.activity:activity-compose:1.9.2")
+    implementation("androidx.exifinterface:exifinterface:1.3.7")
 
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-graphics")
@@ -74,14 +75,10 @@ dependencies {
 
     implementation("androidx.navigation:navigation-compose:2.8.1")
 
-    // Camera capture.
-    val cameraxVersion = "1.3.4"
-    implementation("androidx.camera:camera-core:$cameraxVersion")
-    implementation("androidx.camera:camera-camera2:$cameraxVersion")
-    implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
-    implementation("androidx.camera:camera-view:$cameraxVersion")
+    // Photos come from the system Camera app (ACTION_IMAGE_CAPTURE) and the
+    // system Photo Picker - no CameraX/Camera2 dependency needed.
 
-    // Local computer vision: stitching, perspective correction, row detection.
+    // Local computer vision: perspective correction, row detection.
     implementation("org.opencv:opencv:4.11.0")
 
     // Local OCR (Tesseract JNI wrapper), fully offline once traineddata is bundled.

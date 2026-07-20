@@ -15,22 +15,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
-/** A single in-progress scan's rows, so an interrupted review can resume. There is only ever one draft (id = 0). */
+/** The current in-progress candidate rows, so an interrupted review can resume. There is only ever one draft (id = 0). No history table - that's intentionally out of scope for this version. */
 @Entity(tableName = "draft")
 data class DraftEntity(
     @PrimaryKey val id: Int = 0,
     val rowsJson: String,
     val updatedAt: Long,
-)
-
-/** A previously generated (not necessarily sent) daily report, kept as local history only. */
-@Entity(tableName = "report_history")
-data class ReportHistoryEntity(
-    @PrimaryKey(autoGenerate = true) val id: Long = 0,
-    val subject: String,
-    val body: String,
-    val createdAt: Long,
-    val rowCount: Int,
 )
 
 @Dao
@@ -48,32 +38,16 @@ interface DraftDao {
     suspend fun clear()
 }
 
-@Dao
-interface ReportHistoryDao {
-    @Query("SELECT * FROM report_history ORDER BY createdAt DESC LIMIT 20")
-    fun recent(): Flow<List<ReportHistoryEntity>>
-
-    @Query("SELECT * FROM report_history ORDER BY createdAt DESC LIMIT 1")
-    suspend fun latest(): ReportHistoryEntity?
-
-    @Insert
-    suspend fun insert(entity: ReportHistoryEntity): Long
-
-    @Query("DELETE FROM report_history")
-    suspend fun clearAll()
-}
-
-@Database(entities = [DraftEntity::class, ReportHistoryEntity::class], version = 1, exportSchema = false)
-abstract class ReportDatabase : RoomDatabase() {
+@Database(entities = [DraftEntity::class], version = 1, exportSchema = false)
+abstract class DraftDatabase : RoomDatabase() {
     abstract fun draftDao(): DraftDao
-    abstract fun reportHistoryDao(): ReportHistoryDao
 
     companion object {
-        @Volatile private var instance: ReportDatabase? = null
+        @Volatile private var instance: DraftDatabase? = null
 
-        fun get(context: Context): ReportDatabase =
+        fun get(context: Context): DraftDatabase =
             instance ?: synchronized(this) {
-                instance ?: Room.databaseBuilder(context.applicationContext, ReportDatabase::class.java, "reports.db")
+                instance ?: Room.databaseBuilder(context.applicationContext, DraftDatabase::class.java, "draft.db")
                     .fallbackToDestructiveMigration(true)
                     .build().also { instance = it }
             }

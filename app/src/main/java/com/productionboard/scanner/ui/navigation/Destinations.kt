@@ -1,11 +1,10 @@
 package com.productionboard.scanner.ui.navigation
 
 object Destinations {
-    const val HOME = "home"
-    const val SCAN = "scan"
+    const val PHOTO_CAPTURE = "photo_capture"
+    const val PROCESSING = "processing"
     const val REVIEW = "review"
-    const val MANUAL_ENTRY = "manual_entry"
-    const val REPORT = "report"
+    const val EMAIL = "email"
     const val SETTINGS = "settings"
     const val CALIBRATION = "calibration"
 }

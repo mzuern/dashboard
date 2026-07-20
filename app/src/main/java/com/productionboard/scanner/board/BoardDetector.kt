@@ -4,43 +4,53 @@ import android.graphics.Bitmap
 import com.productionboard.scanner.domain.BoardTemplate
 import com.productionboard.scanner.domain.PixelRect
 import com.productionboard.scanner.domain.RowRect
-import com.productionboard.scanner.domain.computeRowCount
+import com.productionboard.scanner.domain.maxRowCount
 import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
+import kotlin.math.min
 
 /**
- * Locates each project row within the corrected board image. The board
- * layout is fixed and already known via [BoardTemplate], so this does
- * not attempt general-purpose table detection - it looks for horizontal
- * separator lines near where the template expects them (a row-wise
- * Sobel-Y gradient-energy projection, peak-picked) and snaps to those
- * when confident, falling back to pure template math otherwise. Never
- * runs OCR - only row geometry.
+ * Locates each visible project row within a single photo's board-area
+ * crop. Each photo may show a different section of the board (not
+ * necessarily starting at row 1), so this doesn't assume a fixed global
+ * row index - it applies the calibrated row spacing ([BoardTemplate.rowHeightPct])
+ * starting from wherever the crop begins, refined with a row-wise
+ * Sobel-Y gradient-energy projection (peak-picked) that snaps to real
+ * separator lines when confident. Never runs OCR - only row geometry.
  */
 class BoardDetector {
 
     fun detectRows(board: Bitmap, template: BoardTemplate): List<RowRect> {
-        val rowCount = template.computeRowCount()
-        if (rowCount == 0) return emptyList()
+        val boardHeightPx = board.height
+        val boardWidthPx = board.width
+        val rowHeightPx = template.rowHeightPct * boardHeightPx
+        val maxRows = template.maxRowCount(boardHeightPx)
+        if (maxRows == 0 || rowHeightPx < 4f) return emptyList()
 
         val lines = findHorizontalLines(board)
+        val tolerance = rowHeightPx * 0.25
         val rows = mutableListOf<RowRect>()
 
-        for (i in 0 until rowCount) {
-            val expectedTop = template.marginTopPx + i * template.rowHeightPx
-            val expectedBottom = expectedTop + template.rowHeightPx
-            val tolerance = template.rowHeightPx * 0.25
-            val snappedTop = snapToLine(lines, expectedTop.toDouble(), tolerance)
-            val snappedBottom = snapToLine(lines, expectedBottom.toDouble(), tolerance)
+        for (i in 0 until maxRows) {
+            val expectedTop = template.firstRowTopPct * boardHeightPx + i * rowHeightPx
+            if (expectedTop >= boardHeightPx) break
+            val expectedBottom = expectedTop + rowHeightPx
+            val visibleBottom = min(expectedBottom, boardHeightPx.toDouble())
+            // A trailing row that's mostly cut off at the bottom of this photo isn't usable - stop here.
+            if ((visibleBottom - expectedTop) < rowHeightPx * 0.6) break
+
+            val snappedTop = snapToLine(lines, expectedTop, tolerance)
+            val snappedBottom = snapToLine(lines, expectedBottom, tolerance)
             val detected = snappedTop != null || snappedBottom != null
-            val top = snappedTop ?: expectedTop.toDouble()
-            val bottom = snappedBottom ?: expectedBottom.toDouble()
+            val top = snappedTop ?: expectedTop
+            val bottom = min(snappedBottom ?: visibleBottom, boardHeightPx.toDouble())
+
             rows += RowRect(
                 index = i,
-                rect = PixelRect(0, top.toInt(), template.boardWidthPx, (bottom - top).toInt().coerceAtLeast(4)),
+                rect = PixelRect(0, top.toInt(), boardWidthPx, (bottom - top).toInt().coerceAtLeast(4)),
                 detected = detected,
             )
         }

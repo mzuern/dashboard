@@ -7,21 +7,30 @@ import org.junit.Test
 class BoardTemplateTest {
 
     @Test
-    fun `computeRowCount derives from board and row height when rowCount is unset`() {
-        val template = BoardTemplate(boardHeightPx = 1600, marginTopPx = 80, marginBottomPx = 40, rowHeightPx = 90)
-        // (1600 - 80 - 40) / 90 = 16.7 -> 16
-        assertEquals(16, template.computeRowCount())
+    fun `maxRowCount scales with the crop's actual height, so the same template works at any photo resolution`() {
+        val template = BoardTemplate(firstRowTopPct = 0.05f, rowHeightPct = 0.10f)
+        // (1000 - 50) / 100 = 9.5 -> 9 full rows fit in a 1000px-tall crop
+        assertEquals(9, template.maxRowCount(1000))
+        // Same row count at half the resolution - row height is a fraction of the crop, not a fixed pixel value.
+        assertEquals(9, template.maxRowCount(500))
     }
 
     @Test
-    fun `computeRowCount respects an explicit override`() {
-        val template = BoardTemplate(rowCount = 5)
-        assertEquals(5, template.computeRowCount())
+    fun `maxRowCount is smaller for a photo framed to show less of the board vertically`() {
+        // A row here occupies twice the fraction of the board area's height (photo zoomed in / framed tighter).
+        val zoomedIn = BoardTemplate(firstRowTopPct = 0.05f, rowHeightPct = 0.20f)
+        assertEquals(4, zoomedIn.maxRowCount(1000))
     }
 
     @Test
     fun `default template is valid`() {
         assertTrue(BoardTemplate.DEFAULT.validate().isEmpty())
+    }
+
+    @Test
+    fun `board area extending past the photo is flagged`() {
+        val template = BoardTemplate.DEFAULT.copy(boardArea = FractionalRect(0.5f, 0f, 0.8f, 1f))
+        assertTrue(template.validate().any { it.contains("Board area") })
     }
 
     @Test
@@ -44,7 +53,17 @@ class BoardTemplateTest {
 
     @Test
     fun `too-small row height is flagged`() {
-        val template = BoardTemplate.DEFAULT.copy(rowHeightPx = 5)
+        val template = BoardTemplate.DEFAULT.copy(rowHeightPct = 0.001f)
         assertTrue(template.validate().any { it.contains("Row height") })
+    }
+
+    @Test
+    fun `clampedTo keeps a rect within 0-1 bounds while preserving its size`() {
+        val rect = FractionalRect(xPct = 0.95f, yPct = 0.95f, wPct = 0.2f, hPct = 0.2f)
+        val clamped = rect.clampedTo()
+        assertTrue(clamped.xPct + clamped.wPct <= 1.001f)
+        assertTrue(clamped.yPct + clamped.hPct <= 1.001f)
+        assertEquals(0.2f, clamped.wPct)
+        assertEquals(0.2f, clamped.hPct)
     }
 }

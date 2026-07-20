@@ -44,9 +44,6 @@ class SettingsRepository(private val context: Context) {
         if (settings.ocrConfidenceThreshold < 0f || settings.ocrConfidenceThreshold > 100f) {
             errors += "OCR confidence threshold must be between 0 and 100."
         }
-        if (settings.coverageThreshold <= 0f || settings.coverageThreshold > 1f) {
-            errors += "Coverage threshold must be between 1% and 100%."
-        }
         if (errors.isNotEmpty()) return SaveResult.Invalid(errors)
 
         context.settingsDataStore.edit { prefs ->

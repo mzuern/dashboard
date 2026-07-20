@@ -13,9 +13,9 @@ data class ExtractedRegion(val field: FieldKey, val bitmap: Bitmap, val sourceRe
 /**
  * Crops only the three configured field regions out of each detected row
  * - never the whole board. Region rectangles are defined as percentages
- * of the row's bounding box in [BoardTemplate], so they scale
- * automatically with row height and with the canonical board resolution
- * configured in Settings/CalibrationScreen.
+ * of the row's own bounding box in [BoardTemplate], so they scale
+ * automatically regardless of a photo's resolution or how much of the
+ * board it captured.
  */
 class RegionExtractor(private val template: BoardTemplate) {
 
