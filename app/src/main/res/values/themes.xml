@@ -1,0 +1,9 @@
+<resources>
+    <!-- Compose owns theming for all screen content; this is only the
+         window-level base theme used before/around Compose. -->
+    <style name="Theme.BoardScanner" parent="android:Theme.Material.NoActionBar">
+        <item name="android:statusBarColor">@color/launcher_background</item>
+        <item name="android:navigationBarColor">@color/launcher_background</item>
+        <item name="android:windowBackground">@color/launcher_background</item>
+    </style>
+</resources>
