@@ -2,6 +2,7 @@ package com.productionboard.scanner.processing
 
 import android.graphics.Bitmap
 import com.productionboard.scanner.board.BoardDetector
+import com.productionboard.scanner.board.ExtractedRegion
 import com.productionboard.scanner.board.RegionExtractor
 import com.productionboard.scanner.domain.BoardTemplate
 import com.productionboard.scanner.domain.FieldKey
@@ -51,12 +52,7 @@ class PhotoProcessor(private val ocr: OCRProvider) {
             val byField = mutableMapOf<FieldKey, FieldResult>()
 
             for (region in regions) {
-                val ocrResult = ocr.recognize(region.bitmap, whitelistFor(region.field))
-                byField[region.field] = when (region.field) {
-                    FieldKey.PROJECT_NUMBER -> OCRValidator.projectNumber(ocrResult.text, ocrResult.confidence)
-                    FieldKey.CUSTOMER -> OCRValidator.customer(ocrResult.text, ocrResult.confidence)
-                    FieldKey.DAYS_REMAINING -> OCRValidator.daysRemaining(ocrResult.text, ocrResult.confidence)
-                }
+                byField[region.field] = recognizeField(region, confidenceThreshold)
             }
 
             val projectNumber = byField.getValue(FieldKey.PROJECT_NUMBER)
@@ -86,6 +82,31 @@ class PhotoProcessor(private val ocr: OCRProvider) {
         }
 
         results
+    }
+
+    /**
+     * Runs OCR on a field crop, preferring the Otsu-binarized version and
+     * falling back to adaptive thresholding only if Otsu's result doesn't
+     * pass validation - adaptive compensates for uneven lighting (e.g.
+     * glare on one side of a card) but is noisier on a clean, evenly-lit
+     * crop, so it isn't tried first.
+     */
+    private suspend fun recognizeField(region: ExtractedRegion, confidenceThreshold: Float): FieldResult {
+        val whitelist = whitelistFor(region.field)
+
+        val otsuResult = ocr.recognize(OcrPreprocessor.otsu(region.bitmap), whitelist)
+        val otsuField = validate(region.field, otsuResult.text, otsuResult.confidence, "otsu")
+        if (OCRValidator.isOk(otsuField, confidenceThreshold)) return otsuField
+
+        val adaptiveResult = ocr.recognize(OcrPreprocessor.adaptive(region.bitmap), whitelist)
+        val adaptiveField = validate(region.field, adaptiveResult.text, adaptiveResult.confidence, "adaptive")
+        return if (adaptiveField.confidence > otsuField.confidence) adaptiveField else otsuField
+    }
+
+    private fun validate(field: FieldKey, text: String, confidence: Float, variant: String): FieldResult = when (field) {
+        FieldKey.PROJECT_NUMBER -> OCRValidator.projectNumber(text, confidence, variant)
+        FieldKey.CUSTOMER -> OCRValidator.customer(text, confidence, variant)
+        FieldKey.DAYS_REMAINING -> OCRValidator.daysRemaining(text, confidence, variant)
     }
 
     /** EXIF + manual rotation, crop to the calibrated board area, then best-effort perspective correction. */

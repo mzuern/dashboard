@@ -6,7 +6,6 @@ import com.productionboard.scanner.domain.PixelRect
 import com.productionboard.scanner.domain.RowRect
 import com.productionboard.scanner.domain.maxRowCount
 import org.opencv.android.Utils
-import org.opencv.core.Core
 import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
@@ -17,9 +16,9 @@ import kotlin.math.min
  * crop. Each photo may show a different section of the board (not
  * necessarily starting at row 1), so this doesn't assume a fixed global
  * row index - it applies the calibrated row spacing ([BoardTemplate.rowHeightPct])
- * starting from wherever the crop begins, refined with a row-wise
- * Sobel-Y gradient-energy projection (peak-picked) that snaps to real
- * separator lines when confident. Never runs OCR - only row geometry.
+ * starting from wherever the crop begins, refined with a row-wise dark-band
+ * projection that snaps to real separator lines when confident. Never runs
+ * OCR - only row geometry.
  */
 class BoardDetector {
 
@@ -57,39 +56,71 @@ class BoardDetector {
         return rows
     }
 
-    /** Row-wise gradient-energy projection; returns y-positions of strong horizontal edges. */
+    /**
+     * Row-wise darkness projection; returns the center y of each thick,
+     * near-black band spanning the crop's full width.
+     *
+     * A pure gradient-peak approach (tried first, verified against real
+     * board photos) regularly locked onto a card's own internal grid lines
+     * - e.g. the rule under "Turn to Shipping:" - because a curled or
+     * overlapping laminated card can produce as strong an edge as the
+     * actual board divider. The board's real row dividers are a physically
+     * thick black tape/marker line running the full row width, while
+     * internal card rules and handwriting are thin and/or don't span the
+     * whole width - averaging brightness across each full row (rather than
+     * looking at gradient magnitude) and requiring a minimum run length
+     * suppresses both of those false positives.
+     *
+     * The dark/light cutoff is Otsu's threshold computed over the row-mean
+     * profile itself (not a fixed or fixed-fraction value): tried against
+     * real board photos, a fixed fraction of the overall image brightness
+     * missed dividers that were partially washed out by glare in one part
+     * of the frame, while Otsu on the per-row profile - which only has to
+     * separate "mostly-white rows" from "mostly-black rows", a strongly
+     * bimodal signal - found all of them.
+     */
     private fun findHorizontalLines(board: Bitmap): List<Double> {
         val src = Mat()
-        Utils.bitmapToMat(board, src)
         val gray = Mat()
-        val sobel = Mat()
+        val rowMeanMat = Mat()
+        val otsuOutput = Mat()
         try {
+            Utils.bitmapToMat(board, src)
             Imgproc.cvtColor(src, gray, Imgproc.COLOR_RGBA2GRAY)
-            Imgproc.Sobel(gray, sobel, CvType.CV_32F, 0, 1, 3)
-            Core.convertScaleAbs(sobel, sobel)
 
-            val rows = sobel.rows()
-            val cols = sobel.cols()
-            val rowEnergy = DoubleArray(rows)
+            val rows = gray.rows()
+            val cols = gray.cols()
+            val rowMean = DoubleArray(rows)
             val rowBuf = ByteArray(cols)
             for (y in 0 until rows) {
-                sobel.get(y, 0, rowBuf)
+                gray.get(y, 0, rowBuf)
                 var sum = 0L
                 for (b in rowBuf) sum += (b.toInt() and 0xff)
-                rowEnergy[y] = sum.toDouble() / cols
+                rowMean[y] = sum.toDouble() / cols
             }
 
-            val mean = rowEnergy.average()
-            val threshold = mean * 2.2
-            val peaks = mutableListOf<Double>()
-            for (y in 1 until rowEnergy.size - 1) {
-                if (rowEnergy[y] > threshold && rowEnergy[y] >= rowEnergy[y - 1] && rowEnergy[y] >= rowEnergy[y + 1]) {
-                    peaks += y.toDouble()
+            rowMeanMat.create(rows, 1, CvType.CV_8U)
+            rowMeanMat.put(0, 0, ByteArray(rows) { rowMean[it].toInt().coerceIn(0, 255).toByte() })
+            val darkThreshold = Imgproc.threshold(rowMeanMat, otsuOutput, 0.0, 255.0, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
+            val minThicknessPx = (rows * 0.006).coerceAtLeast(3.0)
+
+            val lines = mutableListOf<Double>()
+            var runStart = -1
+            for (y in 0 until rows) {
+                val isDark = rowMean[y] < darkThreshold
+                if (isDark && runStart == -1) {
+                    runStart = y
+                } else if (!isDark && runStart != -1) {
+                    if (y - runStart >= minThicknessPx) lines += (runStart + y - 1) / 2.0
+                    runStart = -1
                 }
             }
-            return peaks
+            if (runStart != -1 && rows - runStart >= minThicknessPx) {
+                lines += (runStart + rows - 1) / 2.0
+            }
+            return lines
         } finally {
-            src.release(); gray.release(); sobel.release()
+            src.release(); gray.release(); rowMeanMat.release(); otsuOutput.release()
         }
     }
 }

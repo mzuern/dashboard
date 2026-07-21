@@ -101,20 +101,48 @@ itself couldn't be configured, let alone compiled, in that environment.
   versions, or a `FileProvider` path/authority mismatch. These should be
   small, mechanical fixes given the shape of the code is right, not a
   rewrite - but budget time for it.
-- The riskiest pieces, in order, matching what was flagged before
-  writing any code:
-  1. **Row detection accuracy on a real photo** - `BoardDetector`
-     derives row positions from the calibrated `rowHeightPct` plus a
-     best-effort horizontal-line snap; it hasn't been tuned against a
-     real whiteboard photo taken at an angle or with uneven lighting.
-  2. **Perspective correction trigger** - `PhotoProcessor` only warps
+**One thing *was* tested despite all that:** the row/column-detection and
+OCR *algorithms* (not the compiled Android app - that's still unbuilt)
+were ported to a throwaway Python/OpenCV/pytesseract script and run
+against real photos of an actual production whiteboard. That caught and
+fixed two real bugs before they ever reached a device:
+- `BoardDetector`'s row-divider detection originally picked the
+  strongest Sobel-Y gradient in the search window, which regularly
+  locked onto a card's own internal grid line instead of the true
+  board divider on a real (imperfectly flat, sometimes curled) card. It
+  now averages brightness across each full row and uses Otsu's
+  threshold on that row-brightness profile to separate "true divider"
+  rows from everything else - verified to find all the real dividers
+  across four different photos with different lighting.
+- `TesseractOCRProvider` was using `PSM_SINGLE_LINE`, which frequently
+  returned nothing at all on bold marker handwriting; `PSM_SINGLE_BLOCK`
+  reliably recognized the same crops instead (e.g. a correct "66455" at
+  90% confidence vs. empty output). `PhotoProcessor` also now tries an
+  Otsu-binarized crop first and only falls back to adaptive
+  thresholding if that doesn't pass validation, to cover glare/uneven
+  lighting without giving up a clean crop's better result.
+
+The riskiest pieces that remain, roughly in order:
+  1. **Handwriting recognition accuracy is a real, measured ceiling, not
+     just a theoretical risk.** Even after the fixes above, confidence
+     on real handwritten digits/customer names from that test photo set
+     stayed low (0-50%) and several characters were genuinely ambiguous
+     (5 vs. S vs. 8, 6 vs. 5) even to a human eye. Expect nearly every
+     row to land in "Needs Review" under the default 65% threshold -
+     that's the intended safety net working, but it means this app is
+     closer to "smart cropper + rough first guess" than "autofill," and
+     users should expect to correct most rows by hand.
+  2. **A physically crooked/curled card clips a fixed-fraction column
+     box.** One row in the test photos had a card taped on at a visible
+     angle relative to the board's own grid, which cut off a leading
+     digit at that row's calibrated column boundary. No per-row
+     correction exists for this (only whole-photo rotation/perspective);
+     it's a framing/taping reality to be aware of, not a bug to fix.
+  3. **Perspective correction trigger** - `PhotoProcessor` only warps
      the board-area crop when `PerspectiveCorrector` finds a confident
      4-point board edge (`areaRatio > 0.5`); a photo where the board
      doesn't fill enough of the frame silently skips correction and
-     uses the raw crop, which may skew row alignment.
-  3. **Handwritten "Days Remaining" / "Customer" entries** - Tesseract
-     (any version) is weak on handwriting. The confidence-threshold
-     review flow is the mitigation, not a fix.
+     uses the raw crop, which may skew row alignment. Untested on-device.
   4. **Calibration usability** - the drag-to-define board
      area/row-spacing/column-region flow in `CalibrationScreen` is new
      UI that hasn't been tried on an actual touchscreen against a real
