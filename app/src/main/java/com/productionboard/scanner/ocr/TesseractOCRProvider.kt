@@ -23,7 +23,11 @@ class TesseractOCRProvider(private val context: Context) : OCRProvider {
             val tess = TessBaseAPI()
             val ok = tess.init(dataRoot.absolutePath, "eng")
             check(ok) { "Failed to initialize Tesseract - trained data may be missing or corrupt." }
-            tess.pageSegMode = TessBaseAPI.PageSegMode.PSM_SINGLE_LINE
+            // PSM_SINGLE_LINE was tried first but a Python/pytesseract prototype of this
+            // exact pipeline against real handwritten board photos showed it frequently
+            // returns nothing at all on bold marker digits; PSM_SINGLE_BLOCK reliably
+            // recognized the same crops (e.g. a correct "66455" at 90% confidence).
+            tess.pageSegMode = TessBaseAPI.PageSegMode.PSM_SINGLE_BLOCK
             api = tess
         }
     }
