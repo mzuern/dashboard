@@ -21,7 +21,12 @@ object TessDataInstaller {
         val tessdataDir = File(dataRoot, "tessdata")
         val target = File(tessdataDir, "$LANG.traineddata")
 
-        if (!target.exists()) {
+        val expectedSize = context.assets.openFd("tessdata/$LANG.traineddata").use { it.length }
+        // A previous copy that was interrupted (app killed mid-extraction, low storage, etc.)
+        // would otherwise leave a truncated file behind forever, since a plain exists()
+        // check can't tell a partial copy from a complete one - re-extract if the size
+        // doesn't match the asset's real size.
+        if (!target.exists() || target.length() != expectedSize) {
             tessdataDir.mkdirs()
             context.assets.open("tessdata/$LANG.traineddata").use { input ->
                 target.outputStream().use { output -> input.copyTo(output) }
