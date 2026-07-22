@@ -48,7 +48,7 @@ abstract class DraftDatabase : RoomDatabase() {
         fun get(context: Context): DraftDatabase =
             instance ?: synchronized(this) {
                 instance ?: Room.databaseBuilder(context.applicationContext, DraftDatabase::class.java, "draft.db")
-                    .fallbackToDestructiveMigration(true)
+                    .fallbackToDestructiveMigration()
                     .build().also { instance = it }
             }
     }

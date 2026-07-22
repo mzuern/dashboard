@@ -25,16 +25,16 @@ class BoardDetector {
     fun detectRows(board: Bitmap, template: BoardTemplate): List<RowRect> {
         val boardHeightPx = board.height
         val boardWidthPx = board.width
-        val rowHeightPx = template.rowHeightPct * boardHeightPx
+        val rowHeightPx = template.rowHeightPct.toDouble() * boardHeightPx
         val maxRows = template.maxRowCount(boardHeightPx)
-        if (maxRows == 0 || rowHeightPx < 4f) return emptyList()
+        if (maxRows == 0 || rowHeightPx < 4.0) return emptyList()
 
         val lines = findHorizontalLines(board)
         val tolerance = rowHeightPx * 0.25
         val rows = mutableListOf<RowRect>()
 
         for (i in 0 until maxRows) {
-            val expectedTop = template.firstRowTopPct * boardHeightPx + i * rowHeightPx
+            val expectedTop = template.firstRowTopPct.toDouble() * boardHeightPx + i * rowHeightPx
             if (expectedTop >= boardHeightPx) break
             val expectedBottom = expectedTop + rowHeightPx
             val visibleBottom = min(expectedBottom, boardHeightPx.toDouble())
