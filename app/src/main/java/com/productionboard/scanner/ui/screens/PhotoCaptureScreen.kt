@@ -26,6 +26,8 @@ import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.RotateRight
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Button
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -33,6 +35,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -46,6 +49,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.productionboard.scanner.domain.BoardTemplate
 import com.productionboard.scanner.photo.PhotoCaptureViewModel
 import com.productionboard.scanner.photo.SelectedPhoto
 
@@ -58,8 +62,10 @@ import com.productionboard.scanner.photo.SelectedPhoto
 @Composable
 fun PhotoCaptureScreen(
     viewModel: PhotoCaptureViewModel,
+    boardTemplate: BoardTemplate,
     onProcessPhotos: () -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenCalibration: () -> Unit,
 ) {
     val photos by viewModel.photos.collectAsState()
     val context = LocalContext.current
@@ -87,6 +93,31 @@ fun PhotoCaptureScreen(
                 "Take or choose photos covering the whole board. It's fine to use several overlapping photos instead of one.",
                 style = MaterialTheme.typography.bodySmall,
             )
+
+            if (boardTemplate == BoardTemplate.DEFAULT) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            "Board not calibrated yet",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        Text(
+                            "Without calibration, the app doesn't know where your board's rows and columns are, " +
+                                "and processing will produce garbage. Take one photo of your board, then calibrate.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        TextButton(onClick = onOpenCalibration, modifier = Modifier.padding(top = 4.dp)) {
+                            Text("Calibrate Now")
+                        }
+                    }
+                }
+            }
 
             Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 Button(

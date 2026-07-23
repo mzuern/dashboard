@@ -41,4 +41,11 @@ class PhotoCaptureNavigationTest {
         composeRule.onNodeWithText("Calibration").assertExists()
         composeRule.onNodeWithText("Cancel").performClick()
     }
+
+    @Test
+    fun uncalibratedBoardShowsWarningThatLinksToCalibration() {
+        composeRule.onNodeWithText("Board not calibrated yet").assertExists()
+        composeRule.onNodeWithText("Calibrate Now").performClick()
+        composeRule.onNodeWithText("Calibration").assertExists()
+    }
 }

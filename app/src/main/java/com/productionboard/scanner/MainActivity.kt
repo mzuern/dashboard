@@ -64,8 +64,10 @@ private fun AppRoot() {
         composable(Destinations.PHOTO_CAPTURE) {
             PhotoCaptureScreen(
                 viewModel = photoCaptureViewModel,
+                boardTemplate = settings.boardTemplate,
                 onProcessPhotos = { navController.navigate(Destinations.PROCESSING) },
                 onOpenSettings = { navController.navigate(Destinations.SETTINGS) },
+                onOpenCalibration = { navController.navigate(Destinations.CALIBRATION) },
             )
         }
 
