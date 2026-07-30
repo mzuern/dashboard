@@ -1,9 +1,13 @@
 package com.productionboard.scanner.ui.screens
 
 import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -18,6 +22,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -28,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -35,6 +41,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -44,9 +51,11 @@ import com.productionboard.scanner.domain.FieldRegions
 import com.productionboard.scanner.domain.FractionalRect
 import com.productionboard.scanner.domain.clampedTo
 import com.productionboard.scanner.domain.validate
+import com.productionboard.scanner.photo.PhotoStorage
 import com.productionboard.scanner.processing.ImageLoader
 import java.io.File
 import kotlin.math.roundToInt
+import kotlinx.coroutines.launch
 
 private val FieldColors = mapOf(
     FieldKey.PROJECT_NUMBER to Color(0xFF646CFF),
@@ -58,6 +67,12 @@ private val FieldLabels = mapOf(
     FieldKey.PROJECT_NUMBER to "Project Number",
     FieldKey.CUSTOMER to "Customer",
     FieldKey.DAYS_REMAINING to "Estimated Days Remaining",
+)
+
+private val FieldShortLabels = mapOf(
+    FieldKey.PROJECT_NUMBER to "Proj #",
+    FieldKey.CUSTOMER to "Customer",
+    FieldKey.DAYS_REMAINING to "Days",
 )
 
 /**
@@ -74,19 +89,49 @@ fun CalibrationScreen(template: BoardTemplate, samplePhotoFile: File?, onSave: (
     var draft by remember(template) { mutableStateOf(template) }
     val errors = draft.validate()
 
-    val sample by produceState<Bitmap?>(initialValue = null, samplePhotoFile) {
-        value = samplePhotoFile?.let { runCatching { ImageLoader.loadUpright(it) }.getOrNull() }
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var sampleOverrideFile by remember { mutableStateOf<File?>(null) }
+    var pendingCameraFile by remember { mutableStateOf<File?>(null) }
+    val effectiveSampleFile = sampleOverrideFile ?: samplePhotoFile
+
+    val takePictureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
+        if (success) sampleOverrideFile = pendingCameraFile
+    }
+    val pickPhotoLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia(),
+    ) { uri ->
+        if (uri != null) scope.launch { sampleOverrideFile = PhotoStorage.copyFromUri(context, uri) }
+    }
+
+    val sample by produceState<Bitmap?>(initialValue = null, effectiveSampleFile) {
+        value = effectiveSampleFile?.let { runCatching { ImageLoader.loadUpright(it) }.getOrNull() }
     }
 
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         item {
             Text("Calibration", style = MaterialTheme.typography.titleLarge)
-            if (samplePhotoFile == null) {
+            if (effectiveSampleFile == null) {
                 Text(
-                    "Take or choose a photo first for the most accurate calibration - showing a placeholder for now.",
+                    "Take or choose a photo of your board to calibrate against - showing a placeholder until you do.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.error,
+                    modifier = Modifier.padding(top = 4.dp),
                 )
+            }
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Button(
+                    onClick = {
+                        val (file, uri) = PhotoStorage.createCameraOutputFile(context)
+                        pendingCameraFile = file
+                        takePictureLauncher.launch(uri)
+                    },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Take Photo") }
+                OutlinedButton(
+                    onClick = { pickPhotoLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                    modifier = Modifier.weight(1f),
+                ) { Text("Choose Photo") }
             }
         }
 
@@ -172,13 +217,16 @@ private fun BoardAreaPicker(sample: Bitmap?, area: FractionalRect, onAreaChanged
                 .offset { IntOffset((area.xPct * wPx).roundToInt(), (area.yPct * hPx).roundToInt()) }
                 .size(with(density) { (area.wPct * wPx).toDp() }, with(density) { (area.hPct * hPx).toDp() })
                 .background(Color(0xFF646CFF).copy(alpha = 0.25f))
+                .border(3.dp, Color(0xFF646CFF))
                 .pointerInput(wPx, hPx) {
                     detectDragGestures { change, drag ->
                         change.consume()
                         onAreaChanged(area.copy(xPct = area.xPct + drag.x / wPx, yPct = area.yPct + drag.y / hPx).clampedTo())
                     }
                 },
-        )
+        ) {
+            LabelChip("Board Area", Color(0xFF646CFF))
+        }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         LabeledNumberField("Width%", area.wPct * 100, Modifier.weight(1f)) { onAreaChanged(area.copy(wPct = it / 100f).clampedTo()) }
@@ -201,11 +249,11 @@ private fun RowSpacingPicker(
     BoxWithConstraints(modifier = Modifier.fillMaxWidth().aspectRatio(aspect).padding(vertical = 8.dp)) {
         Backdrop(boardCrop)
 
-        DraggableHLine(yPct = firstRowTopPct, color = Color(0xFF646CFF)) { newY ->
+        DraggableHLine(yPct = firstRowTopPct, color = Color(0xFF646CFF), label = "Row 1 top") { newY ->
             val clampedTop = newY.coerceIn(0f, secondLinePct - 0.01f)
             onChanged(clampedTop, secondLinePct - clampedTop)
         }
-        DraggableHLine(yPct = secondLinePct, color = Color(0xFF2ECC71)) { newY ->
+        DraggableHLine(yPct = secondLinePct, color = Color(0xFF2ECC71), label = "Row 2 top") { newY ->
             val clampedSecond = newY.coerceIn(firstRowTopPct + 0.01f, 1f)
             onChanged(firstRowTopPct, clampedSecond - firstRowTopPct)
         }
@@ -235,18 +283,22 @@ private fun RowColumnsPicker(
 
         for (field in FieldKey.entries) {
             val r = regions.get(field)
+            val color = FieldColors.getValue(field)
             Box(
                 modifier = Modifier
                     .offset { IntOffset((r.xPct * wPx).roundToInt(), (r.yPct * hPx).roundToInt()) }
                     .size(with(density) { (r.wPct * wPx).toDp() }, with(density) { (r.hPct * hPx).toDp() })
-                    .background(FieldColors.getValue(field).copy(alpha = 0.35f))
+                    .background(color.copy(alpha = 0.35f))
+                    .border(3.dp, color)
                     .pointerInput(field, wPx, hPx) {
                         detectDragGestures { change, drag ->
                             change.consume()
                             onRegionDragged(field, r.copy(xPct = r.xPct + drag.x / wPx, yPct = r.yPct + drag.y / hPx).clampedTo())
                         }
                     },
-            )
+            ) {
+                LabelChip(FieldShortLabels.getValue(field), color)
+            }
         }
     }
     Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.padding(top = 4.dp)) {
@@ -271,15 +323,15 @@ private fun Backdrop(bitmap: Bitmap?) {
 }
 
 @Composable
-private fun DraggableHLine(yPct: Float, color: Color, onDragged: (Float) -> Unit) {
+private fun DraggableHLine(yPct: Float, color: Color, label: String, onDragged: (Float) -> Unit) {
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val density = LocalDensity.current
         val hPx = with(density) { maxHeight.toPx() }
         Box(
             modifier = Modifier
-                .offset { IntOffset(0, (yPct * hPx).roundToInt() - 12) }
+                .offset { IntOffset(0, (yPct * hPx).roundToInt() - 16) }
                 .fillMaxWidth()
-                .height(24.dp)
+                .height(32.dp)
                 .pointerInput(hPx) {
                     detectDragGestures { change, drag ->
                         change.consume()
@@ -288,10 +340,24 @@ private fun DraggableHLine(yPct: Float, color: Color, onDragged: (Float) -> Unit
                 },
         ) {
             Canvas(Modifier.fillMaxSize()) {
-                drawLine(color = color, start = Offset(0f, size.height / 2), end = Offset(size.width, size.height / 2), strokeWidth = 4f)
+                drawLine(color = color, start = Offset(0f, size.height / 2), end = Offset(size.width, size.height / 2), strokeWidth = 8f)
             }
+            LabelChip(label, color, modifier = Modifier.padding(start = 4.dp))
         }
     }
+}
+
+/** A small solid-background label so text stays legible over any photo backdrop. */
+@Composable
+private fun LabelChip(text: String, color: Color, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        color = Color.White,
+        style = MaterialTheme.typography.labelSmall,
+        modifier = modifier
+            .background(color, shape = RoundedCornerShape(4.dp))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    )
 }
 
 @Composable
