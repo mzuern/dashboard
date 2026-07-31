@@ -2,10 +2,7 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- No permissions are declared here on purpose. Photos come from the
-         system Camera app (ACTION_IMAGE_CAPTURE, its own process handles
-         the CAMERA permission) and the system Photo Picker (no storage
-         permission needed at all). No network, no contacts, no accounts. -->
+    <uses-permission android:name="android.permission.CAMERA" />
     <uses-feature android:name="android.hardware.camera.any" android:required="false" />
 
     <application

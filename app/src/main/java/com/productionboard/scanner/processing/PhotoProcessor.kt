@@ -18,14 +18,7 @@ import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/**
- * Processes one photo independently end to end: orientation correction,
- * crop to the calibrated board area, best-effort perspective correction,
- * row detection, per-field region extraction, and local OCR. Photos are
- * never combined here - each photo yields its own candidate rows, and
- * the caller ([ProcessingViewModel]) is responsible for combining them
- * and flagging duplicates.
- */
+/** OCR pipeline for either an ordinary calibrated photo or a guided-scan board mosaic. */
 class PhotoProcessor(private val ocr: OCRProvider) {
 
     suspend fun process(
@@ -34,13 +27,12 @@ class PhotoProcessor(private val ocr: OCRProvider) {
         template: BoardTemplate,
         confidenceThreshold: Float,
     ): List<ReviewRow> = withContext(Dispatchers.Default) {
-        val board = prepareBoardImage(photo, template)
+        val isMosaic = photo.id.startsWith("mosaic-")
+        val board = prepareBoardImage(photo, template, isMosaic)
+        val detector = BoardDetector()
 
-        var rows = BoardDetector().detectRows(board, template)
+        var rows = if (isMosaic) detector.detectRowsAuto(board) else detector.detectRows(board, template)
         if (rows.isEmpty()) {
-            // Calibration produced no usable row spacing for this crop - fall
-            // back to treating the whole board-area crop as one row, rather
-            // than silently producing nothing for this photo.
             rows = listOf(RowRect(index = 0, rect = PixelRect(0, 0, board.width, board.height), detected = false))
         }
 
@@ -50,7 +42,6 @@ class PhotoProcessor(private val ocr: OCRProvider) {
         for (row in rows) {
             val regions = extractor.extractRow(board, row)
             val byField = mutableMapOf<FieldKey, FieldResult>()
-
             for (region in regions) {
                 byField[region.field] = recognizeField(region, confidenceThreshold)
             }
@@ -58,10 +49,6 @@ class PhotoProcessor(private val ocr: OCRProvider) {
             val projectNumber = byField.getValue(FieldKey.PROJECT_NUMBER)
             val customer = byField.getValue(FieldKey.CUSTOMER)
             val daysRemaining = byField.getValue(FieldKey.DAYS_REMAINING)
-
-            // A row with nothing recognized in either identifying field is almost
-            // certainly blank board space below the last real row - skip it
-            // rather than adding an empty candidate to review.
             if (projectNumber.value.isBlank() && customer.value.isBlank()) continue
 
             val needsReview = !OCRValidator.isOk(projectNumber, confidenceThreshold) ||
@@ -80,20 +67,11 @@ class PhotoProcessor(private val ocr: OCRProvider) {
                 rowThumbnail = cropToJpegBytes(board, row.rect),
             )
         }
-
         results
     }
 
-    /**
-     * Runs OCR on a field crop, preferring the Otsu-binarized version and
-     * falling back to adaptive thresholding only if Otsu's result doesn't
-     * pass validation - adaptive compensates for uneven lighting (e.g.
-     * glare on one side of a card) but is noisier on a clean, evenly-lit
-     * crop, so it isn't tried first.
-     */
     private suspend fun recognizeField(region: ExtractedRegion, confidenceThreshold: Float): FieldResult {
         val whitelist = whitelistFor(region.field)
-
         val otsuResult = ocr.recognize(OcrPreprocessor.otsu(region.bitmap), whitelist)
         val otsuField = validate(region.field, otsuResult.text, otsuResult.confidence, "otsu")
         if (OCRValidator.isOk(otsuField, confidenceThreshold)) return otsuField
@@ -109,10 +87,13 @@ class PhotoProcessor(private val ocr: OCRProvider) {
         FieldKey.DAYS_REMAINING -> OCRValidator.daysRemaining(text, confidence, variant)
     }
 
-    /** EXIF + manual rotation, crop to the calibrated board area, then best-effort perspective correction. */
-    private fun prepareBoardImage(photo: SelectedPhoto, template: BoardTemplate): Bitmap {
+    private fun prepareBoardImage(photo: SelectedPhoto, template: BoardTemplate, isMosaic: Boolean): Bitmap {
         val upright = ImageLoader.loadUpright(photo.file)
         val rotated = if (photo.rotationDegrees != 0) ImageLoader.rotate(upright, photo.rotationDegrees) else upright
+
+        // A stitched scan already *is* the board coordinate system. Cropping it
+        // with percentages learned from a different photo would destroy the scan.
+        if (isMosaic) return rotated
 
         val area = template.boardArea
         val x = (area.xPct * rotated.width).toInt().coerceIn(0, rotated.width - 1)
