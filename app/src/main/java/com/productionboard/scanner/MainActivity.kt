@@ -15,10 +15,12 @@ import androidx.navigation.compose.rememberNavController
 import com.productionboard.scanner.photo.PhotoCaptureViewModel
 import com.productionboard.scanner.processing.ProcessingViewModel
 import com.productionboard.scanner.review.ReviewViewModel
+import com.productionboard.scanner.scanning.GuidedScanViewModel
 import com.productionboard.scanner.settings.SettingsViewModel
 import com.productionboard.scanner.ui.navigation.Destinations
 import com.productionboard.scanner.ui.screens.CalibrationScreen
 import com.productionboard.scanner.ui.screens.EmailScreen
+import com.productionboard.scanner.ui.screens.GuidedScanScreen
 import com.productionboard.scanner.ui.screens.PhotoCaptureScreen
 import com.productionboard.scanner.ui.screens.ProcessingScreen
 import com.productionboard.scanner.ui.screens.ReviewScreen
@@ -29,11 +31,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setContent {
-            BoardScannerTheme {
-                AppRoot()
-            }
-        }
+        setContent { BoardScannerTheme { AppRoot() } }
     }
 }
 
@@ -42,6 +40,7 @@ private fun AppRoot() {
     val navController = rememberNavController()
 
     val photoCaptureViewModel: PhotoCaptureViewModel = viewModel()
+    val guidedScanViewModel: GuidedScanViewModel = viewModel()
     val processingViewModel: ProcessingViewModel = viewModel()
     val reviewViewModel: ReviewViewModel = viewModel()
     val settingsViewModel: SettingsViewModel = viewModel()
@@ -54,7 +53,6 @@ private fun AppRoot() {
     val processingResult by processingViewModel.result.collectAsState()
 
     LaunchedEffect(Unit) {
-        // Resume an interrupted review on cold start, so a killed app doesn't lose an already-processed batch.
         reviewViewModel.loadDraftIfPresent { hasDraft ->
             if (hasDraft) navController.navigate(Destinations.REVIEW) { popUpTo(Destinations.PHOTO_CAPTURE) }
         }
@@ -65,9 +63,27 @@ private fun AppRoot() {
             PhotoCaptureScreen(
                 viewModel = photoCaptureViewModel,
                 boardTemplate = settings.boardTemplate,
+                onGuidedScan = { navController.navigate(Destinations.GUIDED_SCAN) },
                 onProcessPhotos = { navController.navigate(Destinations.PROCESSING) },
                 onOpenSettings = { navController.navigate(Destinations.SETTINGS) },
                 onOpenCalibration = { navController.navigate(Destinations.CALIBRATION) },
+            )
+        }
+
+        composable(Destinations.GUIDED_SCAN) {
+            GuidedScanScreen(
+                viewModel = guidedScanViewModel,
+                onComplete = { scanPhotos ->
+                    photoCaptureViewModel.addScanPhotos(scanPhotos)
+                    guidedScanViewModel.reset()
+                    navController.navigate(Destinations.PROCESSING) {
+                        popUpTo(Destinations.PHOTO_CAPTURE)
+                    }
+                },
+                onCancel = {
+                    guidedScanViewModel.reset()
+                    navController.popBackStack()
+                },
             )
         }
 
