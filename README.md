@@ -69,7 +69,7 @@ No board image, OCR text, or project data is sent to a server. Camera analysis, 
 ./gradlew assembleDebug
 ```
 
-The GitHub Actions Android build now runs on pull requests as well as pushes to `main` so scanner changes can be compiler-checked before merge.
+The GitHub Actions Android build is configured to run on pull requests as well as pushes to `main` so scanner changes can be compiler-checked before merge.
 
 ## Device-validation checklist for guided scan
 
