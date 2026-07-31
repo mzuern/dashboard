@@ -12,18 +12,15 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
-/** Holds the current photo-capture session: selected photos, pending in-flight camera capture. Intentionally not persisted - a killed app just starts a fresh session. */
+/** Holds the current capture session: manual photos and guided-scan frames share one processing queue. */
 class PhotoCaptureViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _photos = MutableStateFlow<List<SelectedPhoto>>(emptyList())
     val photos: StateFlow<List<SelectedPhoto>> = _photos.asStateFlow()
 
     private var pendingCameraFile: File? = null
-
-    /** How many of the current photos (by list position) have already been processed - lets "Add More Photos" only process the new ones. */
     private var processedCount = 0
 
-    /** Photos not yet processed, paired with their stable index in the full list (used as ReviewRow.sourcePhotoIndex). */
     fun photosPendingProcessing(): List<IndexedValue<SelectedPhoto>> =
         _photos.value.withIndex().drop(processedCount)
 
@@ -31,14 +28,12 @@ class PhotoCaptureViewModel(application: Application) : AndroidViewModel(applica
         processedCount = _photos.value.size
     }
 
-    /** Creates the destination file/Uri for a new camera capture; call before launching the TakePicture contract. */
     fun prepareCameraCapture(): Uri {
         val (file, uri) = PhotoStorage.createCameraOutputFile(getApplication())
         pendingCameraFile = file
         return uri
     }
 
-    /** Call from the TakePicture result callback with whether the capture succeeded. */
     fun onCameraResult(success: Boolean) {
         val file = pendingCameraFile
         pendingCameraFile = null
@@ -47,6 +42,11 @@ class PhotoCaptureViewModel(application: Application) : AndroidViewModel(applica
         } else {
             file?.delete()
         }
+    }
+
+    fun addScanPhotos(scanPhotos: List<SelectedPhoto>) {
+        if (scanPhotos.isEmpty()) return
+        _photos.update { it + scanPhotos }
     }
 
     fun onPhotosPicked(uris: List<Uri>) {
