@@ -11,17 +11,10 @@ import org.opencv.core.Mat
 import org.opencv.imgproc.Imgproc
 import kotlin.math.min
 
-/**
- * Locates each visible project row within a single photo's board-area
- * crop. Each photo may show a different section of the board (not
- * necessarily starting at row 1), so this doesn't assume a fixed global
- * row index - it applies the calibrated row spacing ([BoardTemplate.rowHeightPct])
- * starting from wherever the crop begins, refined with a row-wise dark-band
- * projection that snaps to real separator lines when confident. Never runs
- * OCR - only row geometry.
- */
+/** Locates project rows without performing OCR. */
 class BoardDetector {
 
+    /** Existing calibrated-photo path, retained for ordinary/manual photos. */
     fun detectRows(board: Bitmap, template: BoardTemplate): List<RowRect> {
         val boardHeightPx = board.height
         val boardWidthPx = board.width
@@ -38,47 +31,53 @@ class BoardDetector {
             if (expectedTop >= boardHeightPx) break
             val expectedBottom = expectedTop + rowHeightPx
             val visibleBottom = min(expectedBottom, boardHeightPx.toDouble())
-            // A trailing row that's mostly cut off at the bottom of this photo isn't usable - stop here.
             if ((visibleBottom - expectedTop) < rowHeightPx * 0.6) break
 
             val snappedTop = snapToLine(lines, expectedTop, tolerance)
             val snappedBottom = snapToLine(lines, expectedBottom, tolerance)
-            val detected = snappedTop != null || snappedBottom != null
             val top = snappedTop ?: expectedTop
             val bottom = min(snappedBottom ?: visibleBottom, boardHeightPx.toDouble())
-
             rows += RowRect(
                 index = i,
                 rect = PixelRect(0, top.toInt(), boardWidthPx, (bottom - top).toInt().coerceAtLeast(4)),
-                detected = detected,
+                detected = snappedTop != null || snappedBottom != null,
             )
         }
         return rows
     }
 
     /**
-     * Row-wise darkness projection; returns the center y of each thick,
-     * near-black band spanning the crop's full width.
-     *
-     * A pure gradient-peak approach (tried first, verified against real
-     * board photos) regularly locked onto a card's own internal grid lines
-     * - e.g. the rule under "Turn to Shipping:" - because a curled or
-     * overlapping laminated card can produce as strong an edge as the
-     * actual board divider. The board's real row dividers are a physically
-     * thick black tape/marker line running the full row width, while
-     * internal card rules and handwriting are thin and/or don't span the
-     * whole width - averaging brightness across each full row (rather than
-     * looking at gradient magnitude) and requiring a minimum run length
-     * suppresses both of those false positives.
-     *
-     * The dark/light cutoff is Otsu's threshold computed over the row-mean
-     * profile itself (not a fixed or fixed-fraction value): tried against
-     * real board photos, a fixed fraction of the overall image brightness
-     * missed dividers that were partially washed out by glare in one part
-     * of the frame, while Otsu on the per-row profile - which only has to
-     * separate "mostly-white rows" from "mostly-black rows", a strongly
-     * bimodal signal - found all of them.
+     * Stitched-scan path. The mosaic itself establishes the coordinate system,
+     * so rows are inferred directly from real full-width separator bands rather
+     * than reusing first-row/row-height percentages from an unrelated photo.
      */
+    fun detectRowsAuto(board: Bitmap): List<RowRect> {
+        val lines = findHorizontalLines(board).sorted()
+        if (lines.size < 2) return emptyList()
+
+        val minUsefulGap = board.height * 0.025
+        val maxUsefulGap = board.height * 0.30
+        val rows = mutableListOf<RowRect>()
+        for (i in 0 until lines.lastIndex) {
+            val top = lines[i]
+            val bottom = lines[i + 1]
+            val gap = bottom - top
+            if (gap < minUsefulGap || gap > maxUsefulGap) continue
+            rows += RowRect(
+                index = rows.size,
+                rect = PixelRect(
+                    x = 0,
+                    y = top.toInt().coerceAtLeast(0),
+                    width = board.width,
+                    height = gap.toInt().coerceAtLeast(4),
+                ),
+                detected = true,
+            )
+        }
+        return rows
+    }
+
+    /** Finds thick dark horizontal bands that span most of the board width. */
     private fun findHorizontalLines(board: Bitmap): List<Double> {
         val src = Mat()
         val gray = Mat()
@@ -101,16 +100,21 @@ class BoardDetector {
 
             rowMeanMat.create(rows, 1, CvType.CV_8U)
             rowMeanMat.put(0, 0, ByteArray(rows) { rowMean[it].toInt().coerceIn(0, 255).toByte() })
-            val darkThreshold = Imgproc.threshold(rowMeanMat, otsuOutput, 0.0, 255.0, Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU)
-            val minThicknessPx = (rows * 0.006).coerceAtLeast(3.0)
+            val darkThreshold = Imgproc.threshold(
+                rowMeanMat,
+                otsuOutput,
+                0.0,
+                255.0,
+                Imgproc.THRESH_BINARY + Imgproc.THRESH_OTSU,
+            )
+            val minThicknessPx = (rows * 0.004).coerceAtLeast(2.0)
 
             val lines = mutableListOf<Double>()
             var runStart = -1
             for (y in 0 until rows) {
                 val isDark = rowMean[y] < darkThreshold
-                if (isDark && runStart == -1) {
-                    runStart = y
-                } else if (!isDark && runStart != -1) {
+                if (isDark && runStart == -1) runStart = y
+                else if (!isDark && runStart != -1) {
                     if (y - runStart >= minThicknessPx) lines += (runStart + y - 1) / 2.0
                     runStart = -1
                 }
