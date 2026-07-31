@@ -8,10 +8,8 @@ import org.opencv.core.Mat
 import org.opencv.core.MatOfDouble
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
-import org.opencv.video.Video
 import kotlin.math.hypot
 import kotlin.math.max
-import kotlin.math.min
 
 private const val SAMPLE_WIDTH = 320
 
@@ -25,7 +23,7 @@ data class MotionSample(
     val hasPrevious: Boolean,
 )
 
-/** Cheap frame-to-frame tracking used only to decide when a useful overlapping frame should be retained. */
+/** Cheap frame-to-frame tracking used to select overlapping panorama frames. */
 class MotionTracker(aspectRatio: Double = 16.0 / 9.0) {
     private val sampleHeight = max(2, (SAMPLE_WIDTH / aspectRatio).toInt())
     private val hann = Mat().also {
@@ -55,15 +53,11 @@ class MotionTracker(aspectRatio: Double = 16.0 / 9.0) {
             gray.convertTo(currentF, CvType.CV_32F)
             prev.convertTo(previousF, CvType.CV_32F)
             runCatching {
-                val shift = Video.phaseCorrelate(previousF, currentF, hann)
+                val response = DoubleArray(1)
+                val shift = Imgproc.phaseCorrelate(previousF, currentF, hann, response)
                 dx = shift.x
                 dy = shift.y
-                val mean = MatOfDouble()
-                val std = MatOfDouble()
-                Core.meanStdDev(gray, mean, std)
-                val texture = min(1.0, std.toArray().getOrElse(0) { 0.0 } / 35.0)
-                val plausible = max(0.0, 1.0 - hypot(dx, dy) / (SAMPLE_WIDTH * 0.55))
-                confidence = texture * plausible
+                confidence = response[0].coerceIn(0.0, 1.0)
             }
             currentF.release(); previousF.release()
         }
