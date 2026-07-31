@@ -26,34 +26,18 @@ android {
             isMinifyEnabled = true
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
-        debug {
-            isMinifyEnabled = false
-        }
+        debug { isMinifyEnabled = false }
     }
 
-    // Trained-data files are large and already compressed; don't let the
-    // build tools try to re-compress or otherwise mangle them.
-    androidResources {
-        noCompress += listOf("traineddata")
-    }
+    androidResources { noCompress += listOf("traineddata") }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions {
-        jvmTarget = "17"
-    }
-
-    buildFeatures {
-        compose = true
-    }
-
-    packaging {
-        resources {
-            excludes += "/META-INF/{AL2.0,LGPL2.1}"
-        }
-    }
+    kotlinOptions { jvmTarget = "17" }
+    buildFeatures { compose = true }
+    packaging { resources { excludes += "/META-INF/{AL2.0,LGPL2.1}" } }
 }
 
 dependencies {
@@ -61,6 +45,7 @@ dependencies {
 
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.exifinterface:exifinterface:1.3.7")
@@ -75,16 +60,16 @@ dependencies {
 
     implementation("androidx.navigation:navigation-compose:2.8.1")
 
-    // Photos come from the system Camera app (ACTION_IMAGE_CAPTURE) and the
-    // system Photo Picker - no CameraX/Camera2 dependency needed.
+    // Live guided board scan. CameraX provides the preview and analysis frames;
+    // OpenCV decides which overlapping frames are useful and stitches them.
+    implementation("androidx.camera:camera-core:1.4.0")
+    implementation("androidx.camera:camera-camera2:1.4.0")
+    implementation("androidx.camera:camera-lifecycle:1.4.0")
+    implementation("androidx.camera:camera-view:1.4.0")
 
-    // Local computer vision: perspective correction, row detection.
     implementation("org.opencv:opencv:4.11.0")
-
-    // Local OCR (Tesseract JNI wrapper), fully offline once traineddata is bundled.
     implementation("com.rmtheis:tess-two:9.1.0")
 
-    // Local settings/template + draft/report persistence.
     implementation("androidx.datastore:datastore-preferences:1.1.1")
     implementation("androidx.room:room-runtime:2.6.1")
     implementation("androidx.room:room-ktx:2.6.1")
