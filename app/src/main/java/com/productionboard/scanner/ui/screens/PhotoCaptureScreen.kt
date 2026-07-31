@@ -53,22 +53,17 @@ import com.productionboard.scanner.domain.BoardTemplate
 import com.productionboard.scanner.photo.PhotoCaptureViewModel
 import com.productionboard.scanner.photo.SelectedPhoto
 
-/**
- * The app's single main screen: take/choose photos of the board, review
- * thumbnails, then process. No live camera preview, no scanning session -
- * just ordinary photos, taken however many are needed to cover the board.
- */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PhotoCaptureScreen(
     viewModel: PhotoCaptureViewModel,
     boardTemplate: BoardTemplate,
+    onGuidedScan: () -> Unit,
     onProcessPhotos: () -> Unit,
     onOpenSettings: () -> Unit,
     onOpenCalibration: () -> Unit,
 ) {
     val photos by viewModel.photos.collectAsState()
-    val context = LocalContext.current
     var previewPhoto by remember { mutableStateOf<SelectedPhoto?>(null) }
 
     val takePictureLauncher = rememberLauncherForActivityResult(ActivityResultContracts.TakePicture()) { success ->
@@ -81,46 +76,29 @@ fun PhotoCaptureScreen(
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Board Photos") },
-                actions = {
-                    IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") }
-                },
+                title = { Text("Production Board") },
+                actions = { IconButton(onClick = onOpenSettings) { Icon(Icons.Default.Settings, contentDescription = "Settings") } },
             )
         },
     ) { padding ->
         Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
             Text(
-                "Take or choose photos covering the whole board. It's fine to use several overlapping photos instead of one.",
-                style = MaterialTheme.typography.bodySmall,
+                "Scan the board up close like a panorama. The app keeps overlapping sharp frames and combines them before reading the jobs.",
+                style = MaterialTheme.typography.bodyMedium,
             )
 
-            if (boardTemplate == BoardTemplate.DEFAULT) {
-                Card(
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-                ) {
-                    Column(modifier = Modifier.padding(12.dp)) {
-                        Text(
-                            "Board not calibrated yet",
-                            style = MaterialTheme.typography.titleSmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                        )
-                        Text(
-                            "Without calibration, the app doesn't know where your board's rows and columns are, " +
-                                "and processing will produce garbage. Take one photo of your board, then calibrate.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onErrorContainer,
-                            modifier = Modifier.padding(top = 4.dp),
-                        )
-                        TextButton(onClick = onOpenCalibration, modifier = Modifier.padding(top = 4.dp)) {
-                            Text("Calibrate Now")
-                        }
-                    }
-                }
-            }
+            Button(
+                onClick = onGuidedScan,
+                modifier = Modifier.fillMaxWidth().padding(top = 16.dp),
+            ) { Text("Scan Board") }
 
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(
+            Text(
+                "Or use ordinary photos if you already have them:",
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(top = 14.dp),
+            )
+            Row(modifier = Modifier.fillMaxWidth().padding(top = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                OutlinedButton(
                     onClick = { takePictureLauncher.launch(viewModel.prepareCameraCapture()) },
                     modifier = Modifier.weight(1f),
                 ) { Text("Take Photo") }
@@ -130,16 +108,34 @@ fun PhotoCaptureScreen(
                 ) { Text("Choose Photos") }
             }
 
+            if (boardTemplate == BoardTemplate.DEFAULT) {
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                    modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text("Column layout not calibrated yet", style = MaterialTheme.typography.titleSmall)
+                        Text(
+                            "The guided scan can capture the board now, but Project / Customer / Days column positions still need one calibration before OCR is dependable.",
+                            style = MaterialTheme.typography.bodySmall,
+                            modifier = Modifier.padding(top = 4.dp),
+                        )
+                        TextButton(onClick = onOpenCalibration) { Text("Calibrate Columns") }
+                    }
+                }
+            }
+
             if (photos.isEmpty()) {
                 Box(modifier = Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Text("No photos yet.", style = MaterialTheme.typography.bodyMedium)
+                    Text("No scan frames or photos yet.", style = MaterialTheme.typography.bodyMedium)
                 }
             } else {
+                Text("Captured sections: ${photos.size}", modifier = Modifier.padding(top = 12.dp))
                 LazyVerticalGrid(
                     columns = GridCells.Adaptive(minSize = 110.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                     verticalArrangement = Arrangement.spacedBy(8.dp),
-                    modifier = Modifier.weight(1f).fillMaxWidth(),
+                    modifier = Modifier.weight(1f).fillMaxWidth().padding(top = 8.dp),
                 ) {
                     items(photos, key = { it.id }) { photo ->
                         PhotoThumbnail(
@@ -156,37 +152,28 @@ fun PhotoCaptureScreen(
                 onClick = onProcessPhotos,
                 enabled = photos.isNotEmpty(),
                 modifier = Modifier.fillMaxWidth().padding(top = 12.dp),
-            ) { Text("Process Photos (${photos.size})") }
+            ) { Text(if (photos.size > 1) "Stitch & Read Board" else "Read Board") }
         }
     }
 
-    previewPhoto?.let { photo ->
-        PhotoPreviewDialog(photo = photo, onDismiss = { previewPhoto = null })
-    }
+    previewPhoto?.let { photo -> PhotoPreviewDialog(photo = photo, onDismiss = { previewPhoto = null }) }
 }
 
 @Composable
 private fun PhotoThumbnail(photo: SelectedPhoto, onClick: () -> Unit, onRemove: () -> Unit, onRotate: () -> Unit) {
     Box(
-        modifier = Modifier
-            .aspectRatio(1f)
-            .clip(RoundedCornerShape(8.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant)
-            .clickable(onClick = onClick),
+        modifier = Modifier.aspectRatio(1f).clip(RoundedCornerShape(8.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant).clickable(onClick = onClick),
     ) {
         val bitmap = remember(photo.id, photo.rotationDegrees) { decodeThumbnail(photo) }
         if (bitmap != null) {
-            Image(
-                bitmap = bitmap.asImageBitmap(),
-                contentDescription = "Selected photo",
-                modifier = Modifier.fillMaxSize(),
-            )
+            Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Captured board section", modifier = Modifier.fillMaxSize())
         }
         IconButton(onClick = onRemove, modifier = Modifier.align(Alignment.TopEnd).size(28.dp)) {
-            Icon(Icons.Default.Close, contentDescription = "Remove photo", tint = MaterialTheme.colorScheme.error)
+            Icon(Icons.Default.Close, contentDescription = "Remove", tint = MaterialTheme.colorScheme.error)
         }
         IconButton(onClick = onRotate, modifier = Modifier.align(Alignment.BottomEnd).size(28.dp)) {
-            Icon(Icons.Default.RotateRight, contentDescription = "Rotate photo")
+            Icon(Icons.Default.RotateRight, contentDescription = "Rotate")
         }
     }
 }
@@ -196,32 +183,22 @@ private fun PhotoPreviewDialog(photo: SelectedPhoto, onDismiss: () -> Unit) {
     androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
         val bitmap = remember(photo.id, photo.rotationDegrees) { decodeThumbnail(photo, maxDimension = 1600) }
         Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surface)
-                .clickable(onClick = onDismiss),
+            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.surface).clickable(onClick = onDismiss),
         ) {
-            if (bitmap != null) {
-                Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Photo preview", modifier = Modifier.fillMaxWidth())
-            }
+            if (bitmap != null) Image(bitmap = bitmap.asImageBitmap(), contentDescription = "Photo preview", modifier = Modifier.fillMaxWidth())
         }
     }
 }
 
-/** Downsampled preview bitmap with the user's manual rotation applied (EXIF correction happens later, at processing time). */
 private fun decodeThumbnail(photo: SelectedPhoto, maxDimension: Int = 400): android.graphics.Bitmap? {
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     BitmapFactory.decodeFile(photo.file.absolutePath, bounds)
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
-
     var sample = 1
     while ((bounds.outWidth / sample) > maxDimension || (bounds.outHeight / sample) > maxDimension) sample *= 2
-
-    val decoded = BitmapFactory.decodeFile(photo.file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
-        ?: return null
+    val decoded = BitmapFactory.decodeFile(photo.file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample }) ?: return null
     if (photo.rotationDegrees == 0) return decoded
-
     val matrix = Matrix().apply { postRotate(photo.rotationDegrees.toFloat()) }
     return android.graphics.Bitmap.createBitmap(decoded, 0, 0, decoded.width, decoded.height, matrix, true)
 }
