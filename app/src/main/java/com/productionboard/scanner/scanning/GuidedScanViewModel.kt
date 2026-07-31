@@ -20,7 +20,7 @@ data class GuidedScanState(
     val error: String? = null,
 )
 
-/** Owns the lightweight live-scan analysis and selected panorama keyframes. */
+/** Owns live-scan analysis and the automatically selected panorama frames. */
 class GuidedScanViewModel(application: Application) : AndroidViewModel(application) {
     private val motionTracker = MotionTracker()
     private val selector = FrameSelector()
@@ -59,7 +59,12 @@ class GuidedScanViewModel(application: Application) : AndroidViewModel(applicati
             try {
                 val photos = selector.keyframes.map { keyFrame ->
                     val file = PhotoStorage.saveScanFrame(getApplication(), keyFrame.bitmap)
-                    SelectedPhoto(id = "scan-${UUID.randomUUID()}", file = file)
+                    SelectedPhoto(
+                        id = "scan-${UUID.randomUUID()}",
+                        file = file,
+                        scanX = keyFrame.camX,
+                        scanY = keyFrame.camY,
+                    )
                 }
                 onComplete(photos)
             } catch (e: Exception) {
