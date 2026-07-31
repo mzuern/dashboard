@@ -51,7 +51,7 @@ class ProcessingViewModel(application: Application) : AndroidViewModel(applicati
                 if (photos.size > 1) {
                     _state.update { it.copy(stitching = true, currentPhotoIndex = photos.size) }
                     val stitched = withContext(Dispatchers.Default) {
-                        BoardStitcher(application).stitch(photos.map { it.value })
+                        BoardStitcher(getApplication<Application>()).stitch(photos.map { it.value })
                     }
                     sourcePhoto = stitched.photo
                     sourceIndex = photos.first().index
