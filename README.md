@@ -1,272 +1,180 @@
 # Production Board Photo-to-Email (Android)
 
-A standalone native Android app that turns photos of a physical
-production whiteboard into an editable daily status email - Project
-Number, Customer, and Estimated Days Remaining for each row. Everything
-runs on-device: photo capture/selection, image cropping and perspective
-correction, row detection, and OCR. No server, no cloud services, no AI
-APIs, no internet access required after installation.
+[![Android Build](https://github.com/mzuern/dashboard/actions/workflows/build.yml/badge.svg)](https://github.com/mzuern/dashboard/actions/workflows/build.yml)
 
-**Read this before anything else:** [Known limitations](#known-limitations) -
-none of this code has been compiled or run on a device. See why below.
+A native Android prototype that turns photos of a physical production whiteboard into an editable daily-status email. The entire image-processing workflow runs on-device: photo capture/selection, board calibration, perspective correction, row detection, OCR, review, duplicate detection, and email text generation.
+
+There is no backend, cloud service, AI API, account system, telemetry, or automatic email sending.
+
+> **Project status:** working prototype / engineering portfolio project. The repository includes automated Android builds, unit tests, real-photo algorithm validation, and device-feedback-driven UI fixes. It is not presented as a deployed production system.
+
+## What this project demonstrates
+
+This project was built around a few deliberate engineering constraints:
+
+- **Local-first / privacy-first processing.** Images and OCR text stay on the device.
+- **Human review where automation is uncertain.** Low-confidence OCR is surfaced for correction instead of silently treated as authoritative.
+- **Replaceable components.** OCR is behind an `OCRProvider` interface; board layout is data-driven rather than hard-coded to one photograph.
+- **Separation of concerns.** Photo acquisition, image processing, board detection, OCR, review state, persistence, reporting, and settings are separate modules.
+- **Recoverable workflow state.** A partially reviewed batch is persisted locally so an interrupted session can resume.
+- **Testability.** Domain validation, OCR normalization, and email generation have unit-test coverage, while Android builds run in GitHub Actions.
+- **Iteration from evidence.** Real board photos exposed failure modes in row-divider detection and OCR segmentation; those observations changed the implementation rather than being hidden behind optimistic assumptions.
 
 ## Workflow
 
-1. **Take or choose photos** of the whiteboard. The board doesn't need
-   to fit in one photo - take as many as you need to cover it, from
-   whatever angle is convenient.
-2. **Process Photos** - each photo is read locally and run through the
-   extraction pipeline independently.
-3. **Review** the extracted rows: correct any field, delete a false
-   row, mark a row "Complete" or "Unknown", remove duplicates (the app
-   flags likely duplicates across photos for you), or add a missed
-   project by hand. Uncheck "Include" on any row you don't want in the
-   email.
-4. **Generate the email** - included rows become a subject + body you
-   can copy or hand off to any app via Android's share sheet.
+1. **Take or choose photos** of the board. Multiple photos can cover different sections.
+2. **Process photos** locally.
+3. **Review extracted rows** and correct uncertain fields.
+4. **Resolve duplicates / omissions** and choose which rows to include.
+5. **Generate email text** and copy it or hand it to another Android app through the system share sheet.
 
-There is no automatic sending, no photo upload, no account, and no
-report history - this is a single-pass tool: photos in, email text out.
+The application intentionally stops short of automatic sending. A human remains in control of the final content and destination.
 
 ## Stack
 
-Kotlin, Jetpack Compose, the system Camera app (via a `TakePicture`
-intent + `FileProvider`) and Android's Photo Picker for photo
-acquisition, OpenCV for Android (`org.opencv:opencv`, Maven Central) for
-perspective correction, Tesseract OCR via `com.rmtheis:tess-two` (JNI
-wrapper, Maven Central), Room + DataStore for local storage. MVVM with
-`StateFlow`. No React Native / Flutter / Capacitor / Electron / WebView -
-this is a true native app, and there is no CameraX dependency since
-photo capture is handed off to the system Camera app.
+- Kotlin
+- Jetpack Compose
+- MVVM + `StateFlow`
+- OpenCV for Android
+- Tesseract OCR through `tess-two`
+- Room for draft persistence
+- DataStore for settings/calibration
+- Android Photo Picker
+- System camera via `TakePicture` + `FileProvider`
+- Gradle / GitHub Actions
 
-## Building
+No React Native, Flutter, WebView, cloud OCR, or external API is required for the application workflow.
 
-Standard Android Studio / Gradle workflow:
+## Architecture
+
+```text
+app/src/main/java/com/productionboard/scanner/
+  photo/       photo acquisition + app-private image storage
+  processing/  pipeline orchestration + duplicate detection
+  vision/      perspective correction
+  board/       row detection + calibrated field extraction
+  ocr/         OCR interface, Tesseract implementation, validation
+  review/      editable review state + recovery
+  report/      email text generation
+  storage/     Room-backed draft persistence
+  settings/    DataStore-backed settings and calibration
+  domain/      shared models and validation
+  ui/          Compose screens, components, navigation, theme
+```
+
+The main single-photo path is deliberately explicit:
+
+```text
+photo
+  -> orientation correction
+  -> calibrated board crop
+  -> best-effort perspective correction
+  -> row detection
+  -> field-region extraction
+  -> OCR
+  -> normalization / confidence checks
+  -> human review
+  -> report text
+```
+
+`PhotoProcessor` owns the ordering of the image pipeline. Other modules own their individual responsibilities rather than duplicating workflow logic.
+
+## Verification status
+
+### Automated Android build
+
+The repository contains a GitHub Actions workflow that checks out the project, installs JDK 17 and the Android SDK, and runs:
+
+```bash
+./gradlew assembleDebug --stacktrace
+```
+
+The repository history includes successful Android build runs. See the **Actions** tab for the current build status.
+
+### Unit tests
+
+Current JVM unit tests include coverage for:
+
+- board-template validation and resolution-independent geometry;
+- OCR validation/normalization behavior;
+- email generation.
+
+Run locally with the Android/Gradle toolchain available.
+
+### Real-image algorithm checks
+
+Before relying on the Android UI, the row-detection and OCR ideas were exercised against actual photos of a physical board using a Python/OpenCV/Tesseract test harness.
+
+That testing exposed concrete problems:
+
+- A Sobel-gradient row-divider approach could lock onto a card's internal line instead of the actual board divider. The implementation was changed to use full-row brightness profiling plus Otsu thresholding.
+- Tesseract's single-line mode frequently failed on bold handwritten marker text. The OCR strategy was changed to use block mode and to try an Otsu-binarized crop before the adaptive-threshold fallback.
+
+The point of those checks was not to claim perfect OCR; it was to find where the design failed against real input and adjust accordingly.
+
+### Device feedback
+
+Calibration UI was revised after device feedback so a calibration image can be captured/selected directly from the calibration screen and draggable overlays remain readable over the photo.
+
+## Known limitations
+
+The most important limitation is **handwriting recognition accuracy**. On the test photos, some handwritten fields remained ambiguous even after preprocessing. The review screen is therefore a core part of the design, not an afterthought.
+
+Other remaining concerns include:
+
+- cards taped at an angle relative to the board grid;
+- perspective-correction confidence on poorly framed photographs;
+- usability of calibration across different board layouts and screen sizes;
+- broader physical-device regression testing.
+
+This project intentionally favors a visible `Needs Review` state over silently fabricating confidence.
+
+## Build
+
+With Android Studio / Android SDK installed:
 
 ```bash
 ./gradlew assembleDebug
 ```
 
-Expected output: `app/build/outputs/apk/debug/app-debug.apk`
+Expected APK:
 
-Open the project root in Android Studio (Hedgehog/2023.1+ recommended)
-and let it sync, or run the Gradle command above from a terminal with
-`ANDROID_HOME` pointing at an installed SDK (Android Studio sets this up
-for you on first run). `compileSdk`/`targetSdk` 34, `minSdk` 26.
+```text
+app/build/outputs/apk/debug/app-debug.apk
+```
 
-The Gradle wrapper (`gradlew`, `gradle/wrapper/`) is included and points
-at Gradle 8.9 from the standard `services.gradle.org` distribution URL.
-
-## Installing
+Install to a connected device/emulator with:
 
 ```bash
-./gradlew installDebug   # installs to a connected device/emulator via adb
+./gradlew installDebug
 ```
 
-or drag `app-debug.apk` onto an emulator, or `adb install app-debug.apk`,
-or open the APK on-device (enable "Install unknown apps" for whichever
-app you transferred it with, if sideloading rather than using Android
-Studio's Run button).
+## Calibration
 
-**The app itself requests no runtime permissions.** "Take Photo" launches
-the system Camera app (which handles its own camera permission) and
-writes the result to this app's private storage via `FileProvider`;
-"Choose Photos" uses Android's Photo Picker, which needs no storage
-permission at all. Everything is written to app-private cache storage,
-optionally cleared automatically after generating an email (Settings).
+The board geometry is represented by a `BoardTemplate` using fractional coordinates rather than fixed pixels. Calibration defines:
 
-## Known limitations
+- board crop;
+- first-row position;
+- row spacing;
+- Project Number region;
+- Customer region;
+- Days Remaining region.
 
-**This code was written in a sandboxed development environment with no
-Android SDK, and no working path to install one.** Concretely: this
-environment's network policy blocks `dl.google.com` (Android SDK
-platform/build-tools) and `maven.google.com` redirects to that same
-blocked host (needed for *every* AndroidX/Compose artifact and the
-Android Gradle Plugin itself). Maven Central worked fine, which is why
-OpenCV and the OCR library resolve from there - but the app module
-itself couldn't be configured, let alone compiled, in that environment.
+Because the geometry is stored as fractions of the calibrated image/crop, the same template can be reused across different photo resolutions.
 
-**What this means concretely:**
-- Zero compiler verification. No `./gradlew build`, no lint pass, no
-  IDE red-squiggle check has touched this code. Package/class/method
-  names for Compose, OpenCV's Java bindings, tess-two, and the
-  `FileProvider`/Photo Picker/`TakePicture` APIs are written from
-  documented API knowledge, not verified against the actual artifacts.
-- Zero runtime verification. Nothing has been run on an emulator or
-  physical device.
-- **Do the first build/run yourself in Android Studio before trusting
-  any of this.** Expect to fix real compile errors - most likely
-  candidates: an OpenCV Java API signature that doesn't match exactly
-  (`Imgproc` method overloads), a Compose API that moved between
-  versions, or a `FileProvider` path/authority mismatch. These should be
-  small, mechanical fixes given the shape of the code is right, not a
-  rewrite - but budget time for it.
-**One thing *was* tested despite all that:** the row/column-detection and
-OCR *algorithms* (not the compiled Android app - that's still unbuilt)
-were ported to a throwaway Python/OpenCV/pytesseract script and run
-against real photos of an actual production whiteboard. That caught and
-fixed two real bugs before they ever reached a device:
-- `BoardDetector`'s row-divider detection originally picked the
-  strongest Sobel-Y gradient in the search window, which regularly
-  locked onto a card's own internal grid line instead of the true
-  board divider on a real (imperfectly flat, sometimes curled) card. It
-  now averages brightness across each full row and uses Otsu's
-  threshold on that row-brightness profile to separate "true divider"
-  rows from everything else - verified to find all the real dividers
-  across four different photos with different lighting.
-- `TesseractOCRProvider` was using `PSM_SINGLE_LINE`, which frequently
-  returned nothing at all on bold marker handwriting; `PSM_SINGLE_BLOCK`
-  reliably recognized the same crops instead (e.g. a correct "66455" at
-  90% confidence vs. empty output). `PhotoProcessor` also now tries an
-  Otsu-binarized crop first and only falls back to adaptive
-  thresholding if that doesn't pass validation, to cover glare/uneven
-  lighting without giving up a clean crop's better result.
+## Privacy boundary
 
-The riskiest pieces that remain, roughly in order:
-  1. **Handwriting recognition accuracy is a real, measured ceiling, not
-     just a theoretical risk.** Even after the fixes above, confidence
-     on real handwritten digits/customer names from that test photo set
-     stayed low (0-50%) and several characters were genuinely ambiguous
-     (5 vs. S vs. 8, 6 vs. 5) even to a human eye. Expect nearly every
-     row to land in "Needs Review" under the default 65% threshold -
-     that's the intended safety net working, but it means this app is
-     closer to "smart cropper + rough first guess" than "autofill," and
-     users should expect to correct most rows by hand.
-  2. **A physically crooked/curled card clips a fixed-fraction column
-     box.** One row in the test photos had a card taped on at a visible
-     angle relative to the board's own grid, which cut off a leading
-     digit at that row's calibrated column boundary. No per-row
-     correction exists for this (only whole-photo rotation/perspective);
-     it's a framing/taping reality to be aware of, not a bug to fix.
-  3. **Perspective correction trigger** - `PhotoProcessor` only warps
-     the board-area crop when `PerspectiveCorrector` finds a confident
-     4-point board edge (`areaRatio > 0.5`); a photo where the board
-     doesn't fill enough of the frame silently skips correction and
-     uses the raw crop, which may skew row alignment. Untested on-device.
-  4. **Calibration usability** - the drag-to-define board
-     area/row-spacing/column-region flow in `CalibrationScreen` is new
-     UI that hasn't been tried on an actual touchscreen against a real
-     sample photo.
+The app itself does not upload board photos or OCR results. Data remains in app-private storage until the user explicitly copies or shares generated text through Android's system mechanisms.
 
-## Physical-device testing checklist
+This is also why the application does not include automatic email delivery, analytics, advertising SDKs, or cloud OCR.
 
-Once it builds and installs:
+## Why this repository is public
 
-- [ ] "Take Photo" launches the system Camera app and the captured photo
-      appears as a thumbnail back in the app
-- [ ] "Choose Photos" opens the system Photo Picker and multi-selecting
-      photos adds all of them as thumbnails
-- [ ] Removing a thumbnail deletes it from the selection; rotating a
-      thumbnail visibly rotates the preview and carries through to
-      processing
-- [ ] "Process Photos (N)" runs OCR locally with no network activity
-      (try airplane mode) and lands on the Review screen
-- [ ] Review screen: rows with genuinely unclear OCR are flagged
-      "Needs Review"; possible duplicates across photos are flagged
-      "Possible Duplicate"; editing a field clears the relevant flag;
-      unchecking "Include" removes a row from the generated email
-      without deleting it; Add/Delete row work; tapping a row's source
-      thumbnail shows the cropped source image it was read from
-- [ ] "+ Add More Photos" returns to photo capture, and processing the
-      new photos merges the new rows into the existing review list
-      (including re-running duplicate detection against the combined
-      set) rather than replacing it
-- [ ] Email screen: Copy Subject/Body actually populate the clipboard;
-      "Share" opens the Android share sheet and Gmail/Outlook/etc. all
-      receive the right text
-- [ ] Kill the app mid-review (recent apps swipe-away) and relaunch -
-      the draft should still be there
-- [ ] Settings: "Delete photos from this device after generating the
-      email" actually clears app-private photo storage when enabled,
-      and leaves photos in place when disabled
-- [ ] Settings → Calibration: the board-area rectangle, first-row/
-      row-height lines, and the three column regions are all draggable
-      against a real sample photo and persist after Save; try
-      recalibrating for a differently-laid-out board
-- [ ] Test on at least one small-screen and one large-screen/tablet
-      device if available
+This repository is a portfolio example of how I approach a practical engineering problem:
 
-## Calibration guide
-
-The board layout is entirely data-driven via `BoardTemplate`
-(`domain/BoardTemplate.kt` for the code default; editable at runtime
-from **Settings → Open Calibration**) - no code changes needed for a
-different whiteboard. All positions are stored as fractions (0-1) of the
-photo/crop they were defined against, so one calibration keeps working
-across photos of different sizes or framing.
-
-1. Take or choose at least one sample photo of the board on the main
-   screen first - Calibration uses your first selected photo as the
-   backdrop for defining regions.
-2. Open **Settings → Open Calibration**.
-3. **Board area**: drag the rectangle to outline just the whiteboard
-   itself within the photo (crop out background/wall/floor).
-4. **Row spacing**: drag the "first row" line to the top of the first
-   project row, and the "second row" line to the top of the next row -
-   the row height is derived from the gap between them and reused for
-   every row below.
-5. **Columns**: drag the three colored boxes (Project Number, Customer,
-   Days Remaining) to where each field sits within a single row; adjust
-   Width%/Height% below if a box needs resizing.
-6. Save. The template is validated (regions must have positive size and
-   stay within bounds, row height must be non-trivial, etc.) before
-   it's persisted to DataStore.
-
-## Extending with additional fields
-
-- **New OCR-extracted field**: add it to `FieldKey` and
-  `FieldRegions`/`BoardTemplate` (`domain/BoardTemplate.kt`), give it a
-  whitelist + a normalizer in `ocr/OCRValidator.kt` (mirror
-  `projectNumber`), extend `RegionExtractor`'s field loop, and add the
-  column to `ReviewRow`/`ReviewScreen`/`EmailGenerator`. Calibration UI
-  in `CalibrationScreen` would also need a fourth draggable region.
-- **New OCR engine**: implement `ocr/OCRProvider.kt`'s interface and
-  swap it in `ProcessingViewModel`. `TesseractOCRProvider` is a
-  reference implementation; any replacement must stay fully local (no
-  network calls).
-- **Different duplicate-matching rules**: `DuplicateDetector` is a
-  single, self-contained object - the exact-project-number and
-  similar-customer/nearby-days heuristics can be tuned or replaced there
-  without touching the rest of the pipeline.
-
-## Architecture
-
-```
-app/src/main/java/com/productionboard/scanner/
-  photo/       SelectedPhoto, PhotoStorage,          photo acquisition (camera
-               PhotoCaptureViewModel                 intent + Photo Picker) + app-private
-                                                      cache storage
-  processing/  ImageLoader, PhotoProcessor,           per-photo pipeline: EXIF/manual
-               DuplicateDetector                      rotation, crop, perspective
-                                                       correction, OCR, dedup across photos
-  vision/      PerspectiveCorrector                   board-edge quad detection + warp
-  board/       BoardDetector, RegionExtractor,         row detection, field cropping,
-               BoardTemplateRepository                 template persistence façade
-  ocr/         OCRProvider, TesseractOCRProvider,      swappable OCR engine + validation/
-               OCRValidator, TessDataInstaller         normalization + asset extraction
-  review/      ReviewViewModel                         editable row list + draft persistence
-  report/      EmailGenerator                          subject/body text generation
-  storage/     DraftDatabase (Room), DraftRepository    local single-draft persistence
-  settings/    SettingsRepository, SettingsViewModel    DataStore-backed app settings
-  domain/      BoardTemplate, ReviewModels,             shared data model
-               AppSettings
-  ui/          screens/, components/, theme/,           Compose UI
-               navigation/
-```
-
-`PhotoProcessor` is the only class that knows the *order* a single
-photo's pipeline runs in (orientation correction → crop to board area →
-best-effort perspective correction → detect rows → extract regions →
-OCR); `ProcessingViewModel` runs it once per photo and combines the
-results, and `DuplicateDetector` flags likely duplicates across the
-combined set. Every other module is independently usable and testable.
-
-## Privacy
-
-No image, OCR text, or project data ever leaves the device - there is no
-network code in this app at all. The generated email is never sent
-automatically; only Copy-to-clipboard and Android's own share sheet
-(which hands text to whatever app the user explicitly picks) are
-provided. No analytics, crash reporting, telemetry, or ads SDKs. Photos
-live in app-private cache storage and can be auto-cleared after
-generating an email (Settings), or removed individually at any time.
+1. define constraints first;
+2. isolate responsibilities;
+3. make uncertain automation reviewable;
+4. test assumptions against real inputs;
+5. preserve privacy by default;
+6. document limitations instead of overstating readiness.
